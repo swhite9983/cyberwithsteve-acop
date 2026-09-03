@@ -83,6 +83,62 @@ class DatabaseUnavailableError(DependencyUnavailableError):
     public_message = "The ACOP datastore is unavailable."
 
 
+class NotFoundError(AcopError):
+    """The addressed resource does not exist."""
+
+    code = "not_found"
+    http_status = 404
+    public_message = "The requested resource was not found."
+
+
+class ValidationError(AcopError):
+    """The request was well-formed but violates a domain rule."""
+
+    code = "validation_failed"
+    http_status = 422
+    public_message = "The request violates a domain rule."
+
+
+class ConflictError(AcopError):
+    """The request contradicts existing state."""
+
+    code = "conflict"
+    http_status = 409
+    public_message = "The request conflicts with existing state."
+
+
+class IdentityConflictError(ConflictError):
+    """Presented identifiers match more than one existing asset.
+
+    ACOP refuses to guess. Picking one on a multi-match silently welds two real
+    machines into one record, and there is no way back once facts have
+    accumulated against the merged row - refusing is recoverable, guessing is
+    not.
+    """
+
+    code = "identity_conflict"
+    public_message = "Presented identifiers match more than one existing asset."
+
+
+class SecretRejectedError(ValidationError):
+    """A fact looked like it carried a credential.
+
+    Raised at the CMDB service boundary. Key-based redaction cannot protect an
+    entity-attribute-value table, because the attribute name lives in a column
+    value rather than a mapping key - so the predicate is screened explicitly.
+    """
+
+    code = "secret_rejected"
+    public_message = "The submitted fact appears to contain a secret and was rejected."
+
+
+class VocabularyError(ValidationError):
+    """A name violates the CMDB vocabulary or a registry rule."""
+
+    code = "vocabulary_error"
+    public_message = "The request uses an invalid name or an unsupported combination."
+
+
 class OllamaError(AcopError):
     """Base class for inference-backend failures."""
 

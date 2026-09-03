@@ -82,3 +82,5 @@ data/
 dumps/
 *.sqlite
 *.sqlite3
+
+_incoming/

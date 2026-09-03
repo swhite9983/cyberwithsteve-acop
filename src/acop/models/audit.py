@@ -67,6 +67,7 @@ class AuditEvent(UUIDPrimaryKeyMixin, Base):
         nullable=False,
         server_default=func.now(),
         doc="When the audited event happened, in UTC.",
+        comment="When the audited event happened, in UTC.",
     )
     recorded_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -77,6 +78,7 @@ class AuditEvent(UUIDPrimaryKeyMixin, Base):
             "that batch-ingested events (Milestone 6 onward) do not corrupt "
             "incident timelines."
         ),
+        comment="When ACOP persisted the record.",
     )
 
     # -- Who ------------------------------------------------------------
@@ -154,6 +156,13 @@ class AuditEvent(UUIDPrimaryKeyMixin, Base):
         # between an AI request and the tool calls it produced.
         Index("ix_audit_event_request_id", "request_id"),
         Index("ix_audit_event_action_occurred", "action", "occurred_at"),
+        {
+            "comment": (
+                "Append-only audit log. No UPDATE or DELETE path exists in the "
+                "application; the acop_app database role should not hold those "
+                "privileges on this table."
+            )
+        },
     )
 
     def __repr__(self) -> str:  # pragma: no cover - debugging aid

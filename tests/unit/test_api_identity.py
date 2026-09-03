@@ -58,14 +58,14 @@ class TestAuthenticationGuard:
 
 
 class TestMilestoneScope:
-    async def test_only_milestone_1_endpoints_are_exposed(
+    async def test_only_milestone_2_endpoints_are_exposed(
         self, client: httpx.AsyncClient
     ) -> None:
         """Guard against scope creep.
 
-        Milestone 1 exposes health and identity. Nothing that reads or changes
-        infrastructure exists yet, and this test fails if an endpoint is added
-        without the milestone that justifies it.
+        Milestone 2 exposes health, identity and the CMDB. Nothing that reads
+        or changes infrastructure exists yet, and this test fails if an
+        endpoint appears without the milestone that justifies it.
         """
         schema = (await client.get("/openapi.json")).json()
         assert set(schema["paths"]) == {
@@ -73,13 +73,49 @@ class TestMilestoneScope:
             "/health/live",
             "/health/ready",
             "/whoami",
+            "/cmdb/assets",
+            "/cmdb/assets/resolve",
+            "/cmdb/assets/{asset_id}",
+            "/cmdb/assets/{asset_id}/conflicts",
+            "/cmdb/assets/{asset_id}/desired-facts",
+            "/cmdb/assets/{asset_id}/facts",
+            "/cmdb/assets/{asset_id}/facts/{predicate}/effective",
+            "/cmdb/assets/{asset_id}/facts/{predicate}/history",
+            "/cmdb/assets/{asset_id}/identifiers",
+            "/cmdb/assets/{asset_id}/related",
+            "/cmdb/assets/{asset_id}/retire",
+            "/cmdb/facts/{fact_id}/attestations",
+            "/cmdb/facts/{fact_id}/revoke",
+            "/cmdb/facts/{fact_id}/verify",
+            "/cmdb/identifiers/{identifier_id}/retire",
+            "/cmdb/relationships",
+            "/cmdb/relationships/{relationship_id}/retire",
         }
+
+    async def test_no_delete_verb_anywhere(self, client: httpx.AsyncClient) -> None:
+        """Retirement is a POST. Nothing in the CMDB is destructive, so an
+        accidental DELETE has nothing to hit."""
+        schema = (await client.get("/openapi.json")).json()
+        for path, operations in schema["paths"].items():
+            assert "delete" not in operations, path
+
+    async def test_no_endpoint_accepts_a_verification_status(
+        self, client: httpx.AsyncClient
+    ) -> None:
+        """Trust is derived from source_type or set by an explicit transition;
+        a client can never assert its own trustworthiness."""
+        schema = (await client.get("/openapi.json")).json()
+        for name, model in schema.get("components", {}).get("schemas", {}).items():
+            if not name.endswith(("Assert", "Create", "Input", "Request")):
+                continue
+            assert "verification_status" not in model.get("properties", {}), name
+            assert "statement_class" not in model.get("properties", {}), name
 
     async def test_no_tool_execution_surface_exists(
         self, client: httpx.AsyncClient
     ) -> None:
         schema = (await client.get("/openapi.json")).json()
-        forbidden = ("tool", "execute", "command", "ssh", "remediat")
+        forbidden = ("tool", "execute", "command", "ssh", "remediat", "discover")
         for path in schema["paths"]:
             assert not any(word in path.lower() for word in forbidden), path
 

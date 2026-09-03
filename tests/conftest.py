@@ -138,3 +138,68 @@ requires_live_ollama = pytest.mark.skipif(
     os.getenv("ACOP_TEST_OLLAMA") != "1",
     reason="Set ACOP_TEST_OLLAMA=1 to run against the real Ollama host.",
 )
+
+
+# ---------------------------------------------------------------------------
+# CMDB fixtures (Milestone 2)
+# ---------------------------------------------------------------------------
+#
+# Addresses and hardware identifiers below come from the documentation ranges
+# reserved for exactly this purpose - RFC 5737 for IPv4 and RFC 7042 for MAC -
+# because this repository is public and lab-shaped fixtures have a way of
+# becoming lab-accurate fixtures.
+DOC_IPV4 = "192.0.2.10"
+DOC_MAC = "00:00:5E:00:53:01"
+DOC_MAC_ALT = "00:00:5E:00:53:02"
+DOC_SERIAL = "DOCSERIAL0001"
+
+#: 12 GiB, 16 GiB and 24 GiB in bytes - the walkthrough values.
+GIB = 1024**3
+MEM_12 = 12 * GIB
+MEM_16 = 16 * GIB
+MEM_24 = 24 * GIB
+
+
+@pytest.fixture
+def operator_principal():
+    """An operator: may create assets and assert facts, may not verify."""
+    from acop.auth import AuthMethod, Principal, PrincipalType, Role
+
+    return Principal(
+        subject="acop:user:operator",
+        principal_type=PrincipalType.HUMAN,
+        issuer="acop:api-key",
+        auth_method=AuthMethod.API_KEY,
+        display_name="Test Operator",
+        roles=frozenset({Role.OPERATOR.value}),
+    )
+
+
+@pytest.fixture
+def approver_principal():
+    """Principal A in the revocation scenario: verifies."""
+    from acop.auth import AuthMethod, Principal, PrincipalType, Role
+
+    return Principal(
+        subject="acop:user:approver-a",
+        principal_type=PrincipalType.HUMAN,
+        issuer="acop:api-key",
+        auth_method=AuthMethod.API_KEY,
+        display_name="Approver A",
+        roles=frozenset({Role.APPROVER.value}),
+    )
+
+
+@pytest.fixture
+def second_approver_principal():
+    """Principal B in the revocation scenario: revokes A's verification."""
+    from acop.auth import AuthMethod, Principal, PrincipalType, Role
+
+    return Principal(
+        subject="acop:user:approver-b",
+        principal_type=PrincipalType.HUMAN,
+        issuer="acop:api-key",
+        auth_method=AuthMethod.API_KEY,
+        display_name="Approver B",
+        roles=frozenset({Role.APPROVER.value}),
+    )

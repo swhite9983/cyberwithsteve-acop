@@ -105,3 +105,10 @@ check-qwen: ## Run a real inference round-trip against the configured model
 .PHONY: verify
 verify: ## Full Milestone 1 acceptance check against a running stack
 	$(VENV_PYTHON) scripts/verify_milestone1.py
+
+.PHONY: verify-cmdb
+verify-cmdb: ## Full Milestone 2 CMDB acceptance check (needs operator + approver keys)
+	$(VENV_PYTHON) scripts/verify_milestone2.py
+
+.PHONY: verify-all
+verify-all: verify verify-cmdb ## Run every milestone acceptance check in order

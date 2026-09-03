@@ -80,10 +80,10 @@ class TestMigrations:
         assert "audit_event" in tables
         assert "alembic_version" in tables
 
-    async def test_milestone_1_creates_exactly_one_domain_table(
+    async def test_milestone_2_creates_exactly_the_expected_tables(
         self, migrated_database
     ) -> None:
-        # Scope guard: no speculative CMDB tables in Milestone 1.
+        # Scope guard: no speculative Milestone 3+ tables.
         async with migrated_database.engine.connect() as connection:
             result = await connection.execute(
                 text(
@@ -92,7 +92,14 @@ class TestMigrations:
                 )
             )
             tables = {row[0] for row in result}
-        assert tables == {"audit_event"}
+        assert tables == {
+            "audit_event",
+            "asset",
+            "asset_identifier",
+            "asset_fact",
+            "fact_attestation",
+            "asset_relationship",
+        }
 
     async def test_timestamps_are_timezone_aware(self, migrated_database) -> None:
         async with migrated_database.engine.connect() as connection:
@@ -181,9 +188,21 @@ class TestAuditService:
         assert "CORE3850" in serialised
 
     async def test_service_exposes_no_update_or_delete_path(self) -> None:
-        # First of the three layers enforcing append-only semantics.
+        # First of the three layers enforcing append-only semantics. The set is
+        # closed rather than pattern-matched so that adding any method to this
+        # service is a decision someone has to make deliberately. Milestone 2
+        # added `record_denial`, which is still append-only - it differs from
+        # `record` only in writing on its own connection so that a refusal
+        # survives the rollback of the request that was refused.
         public_methods = {name for name in dir(AuditService) if not name.startswith("_")}
-        assert public_methods == {"record"}
+        assert public_methods == {"record", "record_denial"}
+        assert not {
+            name
+            for name in public_methods
+            if any(
+                verb in name for verb in ("update", "delete", "modify", "purge", "amend")
+            )
+        }
 
     async def test_request_id_is_captured_for_correlation(
         self, migrated_database

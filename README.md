@@ -1,16 +1,21 @@
 # CyberWithSteve ACOP
 
-**Autonomous Cyber Operations Platform** — Milestone 1 (Foundation).
+**Autonomous Cyber Operations Platform** — Milestone 2 (Authoritative CMDB).
 
 ACOP is a locally-hosted, AI-assisted operations platform for the CyberWithSteve
 home lab. It uses a local model served by Ollama as its reasoning engine and is
 designed so that no external AI API is ever a production dependency.
 
-> **Milestone 1 scope.** This deployment does exactly four things: it starts, it
-> talks to PostgreSQL, it talks to Ollama, and it reports honestly on all three.
-> There are no infrastructure integrations, no agents, and no capability to
-> change anything. That is deliberate — see
-> [`docs/ARCHITECTURE-REVIEW.md`](docs/ARCHITECTURE-REVIEW.md).
+> **Scope so far.** Milestone 1 built the foundation: it starts, it talks to
+> PostgreSQL, it talks to Ollama, and it reports honestly on all three.
+> Milestone 2 adds the authoritative CMDB — assets with resolvable identity,
+> typed facts with provenance and history, reversible trust, and typed
+> relationships.
+>
+> There are still **no infrastructure integrations, no agents, and no capability
+> to change anything outside ACOP's own store.** That is deliberate — see
+> [`docs/ARCHITECTURE-REVIEW.md`](docs/ARCHITECTURE-REVIEW.md) and
+> [`BACKLOG.md`](BACKLOG.md).
 
 ---
 
@@ -21,6 +26,7 @@ designed so that no external AI API is ever a production dependency.
 - [Installation](#installation)
 - [Verifying the milestone](#verifying-the-milestone)
 - [API surface](#api-surface)
+- [The CMDB](#the-cmdb)
 - [Configuration reference](#configuration-reference)
 - [Development](#development)
 - [Security posture](#security-posture)
@@ -58,11 +64,13 @@ for more than one model host later.
 ├── docs/
 │   ├── ARCHITECTURE-REVIEW.md   Read this first
 │   ├── architecture/            Milestone notes
+│   ├── database/                CMDB schema reference
 │   ├── decisions/               ADRs
 │   └── security/                Secrets and audit-immutability posture
 ├── scripts/
 │   ├── check_qwen.py            Real inference round-trip + VRAM sanity checks
-│   └── verify_milestone1.py     Milestone 1 acceptance check
+│   ├── verify_milestone1.py     Milestone 1 acceptance check
+│   └── verify_milestone2.py     Milestone 2 CMDB acceptance check
 ├── src/acop/
 │   ├── ai/ollama/            Typed async Ollama client
 │   ├── api/                  Routes, dependencies, middleware
@@ -72,7 +80,7 @@ for more than one model host later.
 │   ├── db/                   Async engine and session management
 │   ├── models/               SQLAlchemy models
 │   ├── schemas/              Pydantic wire schemas
-│   └── services/             Business logic (health, audit)
+│   └── services/             Business logic (health, audit, CMDB)
 └── tests/
     ├── unit/                 No external dependencies
     └── integration/          Requires PostgreSQL; live Ollama tests opt-in
@@ -266,6 +274,119 @@ changing this response shape or anything downstream of it. See
 
 ---
 
+## The CMDB
+
+Milestone 2's store. Full reference:
+[`docs/database/cmdb-schema.md`](docs/database/cmdb-schema.md) and
+[`docs/architecture/milestone-2.md`](docs/architecture/milestone-2.md).
+
+### The four rules worth knowing before you use it
+
+**1. Identity is resolved, never guessed.** Supply identifiers and a create is
+idempotent — the same call twice yields one asset. If the identifiers match two
+different assets, ACOP returns **409 and writes nothing**. It will not merge
+them. Refusing is recoverable; merging two machines into one record is not.
+([ADR-0006](docs/decisions/ADR-0006-asset-identity-and-deduplication.md))
+
+**2. You cannot assert your own trust.** `verification_status` and
+`statement_class` are not input fields on any endpoint. They are derived from
+the source. An AI-sourced claim can never reach `VERIFIED` or `APPROVED` — that
+is a database CHECK constraint, not a code review step.
+([ADR-0007](docs/decisions/ADR-0007-fact-model-and-history.md))
+
+**3. Nothing is destructive.** There is no `DELETE` verb anywhere in the API.
+Retirement is a `POST`, it closes intervals, and history stays queryable.
+
+**4. Re-asserting an unchanged fact is free.** It advances `last_seen_at`,
+returns `200 TOUCHED`, and writes no history row. This is what makes a
+five-minute discovery sweep survivable in Milestone 5.
+
+### Worked example
+
+```bash
+OP="X-ACOP-API-Key: $OPERATOR_KEY"
+AP="X-ACOP-API-Key: $APPROVER_KEY"
+API=http://127.0.0.1:8000
+
+# Create by identifier. Run it twice - you get one asset, 201 then 200.
+ASSET=$(curl -s -X POST $API/cmdb/assets -H "$OP" -H 'Content-Type: application/json' \
+  -d '{"asset_type":"VM","display_name":"pve-web-01",
+       "identifiers":[{"namespace":"smbios:uuid","value":"..."}]}' | jq -r .id)
+
+# Assert an observation. Trust is derived from the source, not supplied.
+FACT=$(curl -s -X POST $API/cmdb/assets/$ASSET/facts -H "$OP" -H 'Content-Type: application/json' \
+  -d '{"predicate":"memory.total_bytes","value_type":"NUMBER","value_number":17179869184,
+       "source_type":"LIVE_DISCOVERY","source_id":"proxmox:pve-01"}' | jq -r .fact.id)
+
+# An operator cannot verify its own claim. This returns 403.
+curl -s -o /dev/null -w '%{http_code}\n' -X POST $API/cmdb/facts/$FACT/verify -H "$OP" -d '{}'
+
+# An approver can. Verification changes trust, never the value.
+curl -s -X POST $API/cmdb/facts/$FACT/verify -H "$AP" -H 'Content-Type: application/json' \
+  -d '{"reason":"Confirmed against the Proxmox console."}'
+
+# And it is reversible, with the trail intact.
+curl -s -X POST $API/cmdb/facts/$FACT/revoke -H "$AP" -H 'Content-Type: application/json' \
+  -d '{"reason":"Host was rebalanced."}'
+curl -s $API/cmdb/facts/$FACT/attestations -H "$OP" | jq '.[].action'
+# => "REVOKE", "VERIFY"   - both survive; nothing is overwritten
+```
+
+### Endpoints
+
+Assets and identity:
+
+| Method | Path | Role |
+|---|---|---|
+| POST | `/cmdb/assets` | operator |
+| POST | `/cmdb/assets/resolve` | operator |
+| GET | `/cmdb/assets` | viewer |
+| GET | `/cmdb/assets/{id}` | viewer |
+| PATCH | `/cmdb/assets/{id}` | operator |
+| POST | `/cmdb/assets/{id}/retire` | operator |
+| GET&nbsp;/&nbsp;POST | `/cmdb/assets/{id}/identifiers` | viewer / operator |
+| POST | `/cmdb/identifiers/{id}/retire` | operator |
+
+Facts and trust:
+
+| Method | Path | Role |
+|---|---|---|
+| POST&nbsp;/&nbsp;GET | `/cmdb/assets/{id}/facts` | operator / viewer |
+| GET | `/cmdb/assets/{id}/facts/{predicate}/history` | viewer |
+| GET | `/cmdb/assets/{id}/facts/{predicate}/effective` | viewer |
+| GET | `/cmdb/assets/{id}/conflicts` | viewer |
+| POST | `/cmdb/assets/{id}/desired-facts` | operator |
+| GET | `/cmdb/facts/{id}/attestations` | viewer |
+| POST | `/cmdb/facts/{id}/verify` | **approver** |
+| POST | `/cmdb/facts/{id}/revoke` | **approver** |
+
+Relationships:
+
+| Method | Path | Role |
+|---|---|---|
+| POST&nbsp;/&nbsp;GET | `/cmdb/relationships` | operator / viewer |
+| POST | `/cmdb/relationships/{id}/retire` | operator |
+| GET | `/cmdb/assets/{id}/related` | viewer |
+
+`GET .../effective` reports its basis — `AUTHORITATIVE_SINGLE`, `UNANIMOUS`, or
+`UNRESOLVED` when live sources disagree. It never picks a winner. A CMDB that
+says "sources disagree" is more useful during an incident than one that quietly
+guesses; resolution arrives in Milestone 8.
+
+### Verifying the CMDB
+
+```bash
+make verify-cmdb
+# or, against a remote host, with two distinct principals:
+python scripts/verify_milestone2.py --base-url http://acop-01:8000 \
+  --operator-key "$OPERATOR_KEY" --approver-key "$APPROVER_KEY"
+```
+
+Two keys are required because the check proves separation of duties: the
+principal that asserts a fact must not be able to verify it.
+
+---
+
 ## Configuration reference
 
 Every setting is an environment variable prefixed `ACOP_`. Full annotated list
@@ -358,8 +479,13 @@ Mapped to the frameworks this project is a portfolio piece for.
 | Reduced attack surface | Database bound to loopback; Ollama not exposed; no tool-execution surface exists | PR.AC-5 | 4.8, 12.2 |
 | No information disclosure | Errors return a stable code and a correlation ID; detail goes to logs only | PR.DS-5 | 8.2 |
 | Constant-time credential comparison | `secrets.compare_digest`, every key compared | PR.AC-7 | 6.5 |
+| Secrets cannot enter the CMDB | `FactValueScreen` rejects secret-bearing predicates and redacts nested JSON keys before storage | PR.DS-1 | 3.11 |
+| AI output cannot become authoritative | `ck_asset_fact_inference_not_authoritative` — refused by PostgreSQL, not by review | PR.AC-4 | 3.3 |
+| Separation of duties on trust | Asserting a fact is `operator`; verifying or revoking it is `approver` | PR.AC-4 | 6.8 |
+| Refusals are recorded | `DENIED` audit rows are written outside the rolled-back request transaction ([ADR-0009](docs/decisions/ADR-0009-denial-records-survive-rollback.md)) | DE.CM-1, PR.PT-1 | 8.2 |
+| Nothing destructive is reachable | No `DELETE` verb in the API; retirement closes intervals and keeps history | PR.IP-4 | 11.x |
 
-**Known and accepted for Milestone 1**, each with a defined exit:
+**Known and accepted so far**, each with a defined exit:
 
 | Limitation | Accepted because | Resolved by |
 |---|---|---|
@@ -368,6 +494,9 @@ Mapped to the frameworks this project is a portfolio piece for.
 | No rate limiting on authentication | API is not internet-exposed | Before any external exposure |
 | No TLS between ACOP and PostgreSQL | Same Docker host, private bridge network | If the database moves to another host |
 | `acop_app` DB role still holds UPDATE/DELETE on `audit_event` | Documented, not yet applied | Same milestone as the secrets manager |
+| Audit log is append-only in the application, not in storage | Single trust boundary, single operator | External immutable store / SIEM shipping (Milestone 10) — [`BACKLOG.md`](BACKLOG.md) B-07 |
+| Conflicting facts are reported, not resolved | Reporting disagreement honestly beats guessing | Resolver in Milestone 8 — B-02 |
+| Duplicate assets have no merge workflow | Refusing to auto-merge is the deliberate choice | Human-approved merge in Milestone 5 — B-01 |
 
 Detail in [`docs/security/`](docs/security/).
 
@@ -410,10 +539,13 @@ docker compose logs api | grep <request-id>
 
 ## What comes next
 
-Milestone 2 (CMDB) begins only after Milestone 1 is verified in your
-environment. The full roadmap is in the design brief; the review of it is in
-[`docs/ARCHITECTURE-REVIEW.md`](docs/ARCHITECTURE-REVIEW.md).
+Milestone 3 begins only after Milestone 2 is verified in your environment
+(`make verify-cmdb`). The full roadmap is in the design brief; the review of it
+is in [`docs/ARCHITECTURE-REVIEW.md`](docs/ARCHITECTURE-REVIEW.md), and
+everything deliberately deferred — with the gate answer that deferred it — is
+in [`BACKLOG.md`](BACKLOG.md).
 
 Nothing in this repository reads from or writes to your infrastructure. That
 remains true until Milestone 5, and nothing can *change* infrastructure until
-Milestone 12 — after the approval engine exists.
+Milestone 12 — after the approval engine exists. The CMDB added in Milestone 2
+is a store ACOP writes to itself; it does not reach out to anything.

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from typing import Any
 
 from sqlalchemy import DateTime, MetaData, func
 
@@ -39,6 +40,22 @@ class Base(DeclarativeBase):
     """Root declarative base for all ACOP tables."""
 
     metadata = MetaData(naming_convention=NAMING_CONVENTION)
+
+    # SQLAlchemy 2.0 already uses RETURNING on INSERT, so server defaults are
+    # populated after a create. It does *not* do so on UPDATE: a column with a
+    # SQL-side ``onupdate`` (``updated_at``) is left expired, and the next read
+    # of it needs a database round trip. Under asyncio that read happens inside
+    # Pydantic's synchronous attribute extraction and raises MissingGreenlet,
+    # so serialising any row that was just updated fails - which is every PATCH
+    # and every retirement. Fetching eagerly adds a RETURNING clause to an
+    # UPDATE already being issued. The alternative, moving ``onupdate`` to a
+    # Python-side clock, would make ``created_at`` database time and
+    # ``updated_at`` application time; once collectors run on several hosts
+    # those two columns could no longer be ordered against each other.
+    # RUF012 wants ClassVar here; SQLAlchemy declares ``__mapper_args__`` as an
+    # instance variable on DeclarativeBase, so ClassVar is a mypy error. The
+    # dict is never mutated, so the rule is suppressed rather than obeyed.
+    __mapper_args__: dict[str, Any] = {"eager_defaults": True}  # noqa: RUF012
 
 
 class UUIDPrimaryKeyMixin:

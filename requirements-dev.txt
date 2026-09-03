@@ -1,0 +1,9 @@
+# Development and test dependencies. Not installed into the runtime image.
+-r requirements.txt
+
+pytest>=8.2,<9.0
+pytest-asyncio>=0.23,<1.1
+pytest-cov>=5.0,<7.0
+respx>=0.21,<0.23
+ruff>=0.6,<1.0
+mypy>=1.11,<2.0

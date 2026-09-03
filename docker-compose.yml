@@ -1,0 +1,106 @@
+# ACOP Milestone 1 stack.
+#
+# Deployment target: an Ubuntu Server Docker host in the lab. Ollama runs on a
+# separate GPU host and is reached over the network - it is deliberately NOT a
+# service here, so that the inference engine and the application can be
+# upgraded, restarted and backed up independently.
+
+name: acop
+
+services:
+  postgres:
+    # pgvector/pgvector rather than the stock postgres image. The extension is
+    # NOT enabled in Milestone 1 - no migration creates it - but using the image
+    # now means Milestone 3 is `CREATE EXTENSION vector;` instead of a base
+    # image swap and a data directory migration on a database that by then holds
+    # the CMDB and the audit log.
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${ACOP_POSTGRES_USER:?set ACOP_POSTGRES_USER in .env}
+      POSTGRES_PASSWORD: ${ACOP_POSTGRES_PASSWORD:?set ACOP_POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${ACOP_POSTGRES_DB:?set ACOP_POSTGRES_DB in .env}
+      # Enforce password auth for host connections rather than the image
+      # default of trust for anything on the docker network.
+      POSTGRES_HOST_AUTH_METHOD: scram-sha-256
+      POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256"
+    ports:
+      # Bound to loopback only. The database is reachable from the API
+      # container over the compose network and from the host for maintenance,
+      # but is not exposed to the lab network.
+      - "127.0.0.1:${ACOP_POSTGRES_PUBLISHED_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U ${ACOP_POSTGRES_USER} -d ${ACOP_POSTGRES_DB}",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    networks:
+      - acop
+    security_opt:
+      - no-new-privileges:true
+
+  migrate:
+    # Migrations run as a separate one-shot service rather than in the API's
+    # entrypoint. Running them at API startup means N replicas race to migrate,
+    # and a failed migration turns into a crash loop instead of a clear failure.
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: acop-api:${ACOP_IMAGE_TAG:-local}
+    restart: "no"
+    command: ["alembic", "upgrade", "head"]
+    env_file:
+      - .env
+    environment:
+      ACOP_POSTGRES_HOST: postgres
+      ACOP_POSTGRES_PORT: "5432"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - acop
+    security_opt:
+      - no-new-privileges:true
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: acop-api:${ACOP_IMAGE_TAG:-local}
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      ACOP_POSTGRES_HOST: postgres
+      ACOP_POSTGRES_PORT: "5432"
+    ports:
+      - "${ACOP_API_PUBLISHED_PORT:-8000}:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    networks:
+      - acop
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+networks:
+  acop:
+    driver: bridge
+
+volumes:
+  postgres_data:
+    driver: local

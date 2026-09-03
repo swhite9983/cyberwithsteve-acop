@@ -1,0 +1,146 @@
+"""FastAPI dependencies.
+
+Shared, expensive objects (the database engine, the Ollama HTTP client, the
+authenticator) are created once during application startup and stored on
+``app.state``. These dependencies read them from there rather than
+instantiating module-level singletons, so tests can build an isolated
+application and nothing holds global mutable state.
+"""
+
+from __future__ import annotations
+
+from collections.abc import AsyncIterator
+from typing import Annotated, cast
+
+from fastapi import Depends, Request
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from acop.ai.ollama import OllamaClient
+from acop.auth import Authenticator, PresentedCredentials, Principal, Role
+from acop.config import Settings
+from acop.core.exceptions import AuthenticationError, AuthorizationError
+from acop.db import Database
+from acop.services import AuditService, HealthService
+
+
+def get_settings_dep(request: Request) -> Settings:
+    """Return the application settings."""
+    # Starlette's app.state is untyped; cast once here so every call site
+    # downstream is properly typed.
+    return cast(Settings, request.app.state.settings)
+
+
+def get_database(request: Request) -> Database:
+    """Return the application database handle."""
+    # Starlette's app.state is untyped; cast once here so every call site
+    # downstream is properly typed.
+    return cast(Database, request.app.state.database)
+
+
+def get_ollama(request: Request) -> OllamaClient:
+    """Return the shared Ollama client."""
+    # Starlette's app.state is untyped; cast once here so every call site
+    # downstream is properly typed.
+    return cast(OllamaClient, request.app.state.ollama)
+
+
+def get_health_service(request: Request) -> HealthService:
+    """Return the health service."""
+    # Starlette's app.state is untyped; cast once here so every call site
+    # downstream is properly typed.
+    return cast(HealthService, request.app.state.health_service)
+
+
+def get_authenticator(request: Request) -> Authenticator:
+    """Return the authenticator."""
+    # Starlette's app.state is untyped; cast once here so every call site
+    # downstream is properly typed.
+    return cast(Authenticator, request.app.state.authenticator)
+
+
+async def get_session(
+    database: Annotated[Database, Depends(get_database)],
+) -> AsyncIterator[AsyncSession]:
+    """Yield a transactional database session for the request."""
+    async with database.session() as session:
+        yield session
+
+
+def get_audit_service(
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> AuditService:
+    """Return an audit service bound to the request's session."""
+    return AuditService(session)
+
+
+def _presented_credentials(request: Request) -> PresentedCredentials:
+    """Extract credential material from the request without leaking framework types."""
+    client_host = request.client.host if request.client else None
+    # X-Forwarded-For is recorded but not trusted for authorisation. It is
+    # attacker-controlled unless a trusted proxy overwrites it; treating it as
+    # evidence rather than fact is the correct posture until a proxy contract
+    # exists.
+    forwarded = request.headers.get("X-Forwarded-For")
+    source = forwarded.split(",")[0].strip() if forwarded else client_host
+    return PresentedCredentials(
+        headers=dict(request.headers),
+        source_address=(source or None) and source[:64],
+        user_agent=request.headers.get("User-Agent"),
+    )
+
+
+async def get_principal(
+    request: Request,
+    authenticator: Annotated[Authenticator, Depends(get_authenticator)],
+) -> Principal:
+    """Authenticate the caller and return the resulting principal.
+
+    Raises:
+        AuthenticationError: Translated to HTTP 401 by the application's
+            exception handler.
+    """
+    credentials = _presented_credentials(request)
+    principal = await authenticator.authenticate(credentials)
+    request.state.principal = principal
+    request.state.source_address = credentials.source_address
+    request.state.user_agent = credentials.user_agent
+    return principal
+
+
+CurrentPrincipal = Annotated[Principal, Depends(get_principal)]
+
+
+def require_roles(*roles: str | Role) -> object:
+    """Build a dependency that requires at least one of ``roles``.
+
+    Role checks are intentionally coarse in Milestone 1. Fine-grained
+    authorisation is a property of the tool registry (Milestone 4), where a
+    permission class is attached to each individual operation; duplicating that
+    logic at the HTTP layer now would create two sources of truth.
+    """
+    required = tuple(role.value if isinstance(role, Role) else role for role in roles)
+
+    async def _dependency(principal: CurrentPrincipal) -> Principal:
+        if required and not principal.has_any_role(*required):
+            raise AuthorizationError(
+                f"Principal {principal.subject!r} lacks any of {required}",
+                context={"required_roles": list(required)},
+            )
+        return principal
+
+    return Depends(_dependency)
+
+
+__all__ = [
+    "AuthenticationError",
+    "CurrentPrincipal",
+    "get_audit_service",
+    "get_authenticator",
+    "get_database",
+    "get_health_service",
+    "get_ollama",
+    "get_principal",
+    "get_session",
+    "get_settings_dep",
+    "require_roles",
+]

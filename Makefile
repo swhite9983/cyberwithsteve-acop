@@ -3,6 +3,11 @@ SHELL := /bin/bash
 
 COMPOSE ?= docker compose
 PYTHON  ?= python3
+VENV_BIN ?= .venv/bin
+VENV_PYTHON ?= $(VENV_BIN)/python
+RUFF ?= $(VENV_BIN)/ruff
+MYPY ?= $(VENV_BIN)/mypy
+PYTEST ?= $(VENV_BIN)/pytest
 
 .PHONY: help
 help: ## Show this help
@@ -21,25 +26,25 @@ venv: ## Create a local virtualenv and install dev dependencies
 
 .PHONY: lint
 lint: ## Run ruff lint and format checks
-	ruff check src tests scripts migrations
-	ruff format --check src tests scripts migrations
+	$(RUFF) check src tests scripts migrations
+	$(RUFF) format --check src tests scripts migrations
 
 .PHONY: format
 format: ## Auto-format the codebase
-	ruff format src tests scripts migrations
-	ruff check --fix src tests scripts migrations
+	$(RUFF) format src tests scripts migrations
+	$(RUFF) check --fix src tests scripts migrations
 
 .PHONY: typecheck
 typecheck: ## Run mypy in strict mode
-	mypy
+	$(MYPY)
 
 .PHONY: test
 test: ## Run the unit test suite (no external dependencies required)
-	pytest -m "not integration and not live_ollama"
+	$(PYTEST) -m "not integration and not live_ollama"
 
 .PHONY: test-all
 test-all: ## Run every test, including integration (requires a live database)
-	ACOP_TEST_DATABASE=1 pytest
+	ACOP_TEST_DATABASE=1 $(PYTEST)
 
 .PHONY: check
 check: lint typecheck test ## Lint, typecheck and unit test
@@ -95,8 +100,8 @@ health: ## Print the health report from the running API
 
 .PHONY: check-qwen
 check-qwen: ## Run a real inference round-trip against the configured model
-	$(PYTHON) scripts/check_qwen.py
+	$(VENV_PYTHON) scripts/check_qwen.py
 
 .PHONY: verify
 verify: ## Full Milestone 1 acceptance check against a running stack
-	$(PYTHON) scripts/verify_milestone1.py
+	$(VENV_PYTHON) scripts/verify_milestone1.py

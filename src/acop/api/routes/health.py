@@ -31,6 +31,7 @@ from fastapi import APIRouter, Depends, Query, Response, status
 
 from acop import __version__
 from acop.api.deps import get_health_service
+from acop.api.transaction import TransactionalRoute
 from acop.schemas.health import (
     ComponentStatus,
     HealthReport,
@@ -39,7 +40,7 @@ from acop.schemas.health import (
 )
 from acop.services import HealthService
 
-router = APIRouter(tags=["health"])
+router = APIRouter(tags=["health"], route_class=TransactionalRoute)
 
 
 @router.get(

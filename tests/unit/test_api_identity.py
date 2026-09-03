@@ -8,8 +8,14 @@ internals.
 
 from __future__ import annotations
 
+import functools
+import importlib.util
+from pathlib import Path
+from types import ModuleType
+
 import httpx
 
+from acop.schemas.fact import AttestationRead
 from tests.conftest import TEST_API_SECRET
 
 
@@ -57,6 +63,21 @@ class TestAuthenticationGuard:
         assert response.headers.get("WWW-Authenticate") == "Bearer"
 
 
+@functools.cache
+def _verifier() -> ModuleType:
+    """Load scripts/verify_milestone2.py as a module.
+
+    Loaded by path rather than duplicated here on purpose: the acceptance
+    contract must exist exactly once, or the guard guards a copy.
+    """
+    path = Path(__file__).resolve().parents[2] / "scripts" / "verify_milestone2.py"
+    spec = importlib.util.spec_from_file_location("acop_verify_milestone2", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 class TestMilestoneScope:
     async def test_only_milestone_2_endpoints_are_exposed(
         self, client: httpx.AsyncClient
@@ -91,6 +112,42 @@ class TestMilestoneScope:
             "/cmdb/relationships",
             "/cmdb/relationships/{relationship_id}/retire",
         }
+
+    async def test_verifier_required_route_contract_matches_the_api(
+        self, client: httpx.AsyncClient
+    ) -> None:
+        """The acceptance verifier's contract and the API cannot drift apart.
+
+        The verifier previously asserted a raw count of CMDB paths against a
+        number that had silently included /health and /whoami, so it failed on
+        a correct deployment and advised running a database migration - which
+        cannot create a FastAPI route. It now asserts an explicit set of
+        (method, path) pairs, and this test pins that set to what the
+        application actually registers, in both directions.
+        """
+        schema = (await client.get("/openapi.json")).json()
+        registered = {
+            (method.upper(), path)
+            for path, operations in schema["paths"].items()
+            for method in operations
+            if path.startswith("/cmdb")
+        }
+        required = _verifier().REQUIRED_ROUTES
+        assert not required - registered, "verifier requires routes the API lacks"
+        assert not registered - required, "API exposes CMDB routes the contract omits"
+
+    async def test_verifier_reads_the_provider_neutral_attestation_field(
+        self,
+    ) -> None:
+        """The verifier must use the Principal vocabulary, not invent its own.
+
+        It previously read ``actor_subject``, which exists nowhere in ACOP, and
+        crashed with a KeyError on a correct response. The field it reads is
+        pinned to a real field of the response model.
+        """
+        field = _verifier().ATTESTATION_SUBJECT_FIELD
+        assert field == "principal_subject"
+        assert field in AttestationRead.model_fields
 
     async def test_no_delete_verb_anywhere(self, client: httpx.AsyncClient) -> None:
         """Retirement is a POST. Nothing in the CMDB is destructive, so an

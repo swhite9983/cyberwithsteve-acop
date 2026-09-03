@@ -16,6 +16,7 @@ from fastapi import Depends, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from acop.ai.ollama import OllamaClient
+from acop.api.transaction import bind_request_session, unbind_request_session
 from acop.auth import Authenticator, PresentedCredentials, Principal, Role
 from acop.config import Settings
 from acop.core.exceptions import AuthenticationError, AuthorizationError
@@ -68,9 +69,25 @@ def get_authenticator(request: Request) -> Authenticator:
 async def get_session(
     database: Annotated[Database, Depends(get_database)],
 ) -> AsyncIterator[AsyncSession]:
-    """Yield a transactional database session for the request."""
-    async with database.session() as session:
-        yield session
+    """Yield the request's database session.
+
+    The transaction is **not** committed here. FastAPI unwinds the exit stack
+    holding this dependency's teardown after the response has been sent, so a
+    commit placed here is not guaranteed to have happened when the client reads
+    the status code. :class:`acop.api.transaction.TransactionalRoute` commits
+    instead, inside the endpoint call - see that module for the measurement
+    that forced this.
+
+    Publishing the session on a context variable is what lets the route wrapper
+    reach it: the wrapper receives only the endpoint's solved arguments, and
+    not every endpoint declares a session.
+    """
+    async with database.request_transaction() as session:
+        tokens = bind_request_session(session)
+        try:
+            yield session
+        finally:
+            unbind_request_session(tokens)
 
 
 def get_audit_service(

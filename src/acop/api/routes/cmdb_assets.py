@@ -20,6 +20,7 @@ from acop.api.deps import (
     get_fact_service,
     get_identity_resolver,
 )
+from acop.api.transaction import TransactionalRoute
 from acop.core.exceptions import IdentityConflictError
 from acop.models.audit import AuditOutcome, AuditSeverity
 from acop.models.vocabulary import AttestationAction
@@ -39,7 +40,7 @@ from acop.schemas.fact import DesiredFactCreate, FactRead
 from acop.services import AssetService, AuditService, FactService, IdentityResolver
 from acop.services.asset import DEFAULT_PAGE_SIZE
 
-router = APIRouter(prefix="/cmdb", tags=["cmdb-assets"])
+router = APIRouter(prefix="/cmdb", tags=["cmdb-assets"], route_class=TransactionalRoute)
 
 AssetServiceDep = Annotated[AssetService, Depends(get_asset_service)]
 ResolverDep = Annotated[IdentityResolver, Depends(get_identity_resolver)]

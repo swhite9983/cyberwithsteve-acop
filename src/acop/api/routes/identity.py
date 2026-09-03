@@ -19,11 +19,12 @@ from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, Field
 
 from acop.api.deps import CurrentPrincipal, get_audit_service
+from acop.api.transaction import TransactionalRoute
 from acop.models.audit import AuditOutcome, AuditSeverity
 from acop.schemas.audit import AuditEventCreate
 from acop.services import AuditService
 
-router = APIRouter(tags=["identity"])
+router = APIRouter(tags=["identity"], route_class=TransactionalRoute)
 
 
 class WhoAmIResponse(BaseModel):

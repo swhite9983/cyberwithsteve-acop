@@ -13,6 +13,7 @@ from acop.api.deps import (
     get_audit_service,
     get_relationship_service,
 )
+from acop.api.transaction import TransactionalRoute
 from acop.models.audit import AuditOutcome, AuditSeverity
 from acop.models.vocabulary import RelationshipType
 from acop.schemas.audit import AuditEventCreate
@@ -25,7 +26,9 @@ from acop.schemas.relationship import (
 from acop.services import AuditService, RelationshipService
 from acop.services.relationship import TOUCHED
 
-router = APIRouter(prefix="/cmdb", tags=["cmdb-relationships"])
+router = APIRouter(
+    prefix="/cmdb", tags=["cmdb-relationships"], route_class=TransactionalRoute
+)
 
 RelationshipServiceDep = Annotated[RelationshipService, Depends(get_relationship_service)]
 AuditDep = Annotated[AuditService, Depends(get_audit_service)]

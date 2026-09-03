@@ -14,6 +14,7 @@ from acop.api.deps import (
     get_audit_service,
     get_fact_service,
 )
+from acop.api.transaction import TransactionalRoute
 from acop.core.exceptions import SecretRejectedError
 from acop.models.audit import AuditOutcome, AuditSeverity
 from acop.models.vocabulary import AttestationAction, FactKind
@@ -31,7 +32,7 @@ from acop.schemas.fact import (
 from acop.services import AuditService, FactService
 from acop.services.fact import TOUCHED
 
-router = APIRouter(prefix="/cmdb", tags=["cmdb-facts"])
+router = APIRouter(prefix="/cmdb", tags=["cmdb-facts"], route_class=TransactionalRoute)
 
 FactServiceDep = Annotated[FactService, Depends(get_fact_service)]
 AuditDep = Annotated[AuditService, Depends(get_audit_service)]

@@ -106,14 +106,58 @@ class Database:
                 await session.commit()
             except Exception as exc:
                 await self._safe_rollback(session)
-                if _is_connection_failure(exc):
-                    raise DatabaseUnavailableError(
-                        f"Could not reach PostgreSQL at "
-                        f"{self._settings.safe_database_target}: "
-                        f"{type(exc).__name__}",
-                        context={"target": self._settings.safe_database_target},
-                    ) from exc
-                raise
+                raise self._translate(exc) from exc
+
+    @asynccontextmanager
+    async def request_transaction(self) -> AsyncIterator[AsyncSession]:
+        """Yield a session whose transaction **the caller commits**.
+
+        Identical to :meth:`session` in every respect except one: it never
+        commits. That difference exists because of where a commit is allowed to
+        happen.
+
+        A FastAPI dependency declared with ``yield`` has its exit code run from
+        ``scope["fastapi_inner_astack"]``, and FastAPI unwinds that stack
+        *after* ``await response(scope, receive, send)`` - the response is
+        already on the wire. A commit placed in that teardown is therefore not
+        guaranteed to have happened when the client receives 201, and a client
+        that immediately issues a dependent request can read state that has not
+        been committed yet. Measured against a real uvicorn server, an asset
+        was still invisible on an independent connection in 116 of 150 requests
+        that had already returned 201.
+
+        So the session is handed out here without a commit, and
+        :class:`acop.api.transaction.TransactionalRoute` commits it inside the
+        endpoint call - before the response object exists, therefore before it
+        can be sent. Rollback on failure still happens here, so a caller that
+        never commits loses nothing but its own work.
+        """
+        async with self._session_factory() as session:
+            try:
+                yield session
+            except Exception as exc:
+                await self._safe_rollback(session)
+                raise self._translate(exc) from exc
+            # Deliberately no commit. See the docstring.
+
+    def _translate(self, exc: Exception) -> Exception:
+        """Convert a driver-level connection failure into a 503-shaped error.
+
+        SQLAlchemy does **not** wrap the driver's connection errors, so an
+        unreachable PostgreSQL escapes as a bare ``OSError``
+        (``ConnectionRefusedError``) with an asyncpg traceback attached. Left
+        untranslated, an infrastructure condition would surface to callers as
+        an unclassified 500 while ``/health`` simultaneously reported the
+        database as unhealthy - two contradictory signals during an incident.
+        """
+        if _is_connection_failure(exc):
+            return DatabaseUnavailableError(
+                f"Could not reach PostgreSQL at "
+                f"{self._settings.safe_database_target}: "
+                f"{type(exc).__name__}",
+                context={"target": self._settings.safe_database_target},
+            )
+        return exc
 
     @staticmethod
     async def _safe_rollback(session: AsyncSession) -> None:

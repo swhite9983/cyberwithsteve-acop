@@ -28,6 +28,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from acop.config import get_settings
 
+#: The endpoints Milestone 1 delivered. Later milestones add to the surface;
+#: none may remove from it.
+MILESTONE_1_ENDPOINTS = ("/health", "/health/live", "/health/ready", "/whoami")
+
 PASS = "[ PASS ]"  # noqa: S105 - an output label, not a credential
 FAIL = "[ FAIL ]"
 WARN = "[ WARN ]"
@@ -203,17 +207,41 @@ async def verify(base_url: str, api_key: str | None) -> int:
         if openapi.status_code == 200:
             paths = sorted(openapi.json().get("paths", {}))
             check.ok(f"OpenAPI schema published. Endpoints: {', '.join(paths)}")
-            unexpected = [
-                path for path in paths if not path.startswith(("/health", "/whoami"))
-            ]
-            if unexpected:
+            missing = [p for p in MILESTONE_1_ENDPOINTS if p not in paths]
+            if missing:
                 check.bad(
-                    f"Endpoints outside Milestone 1 scope are exposed: {unexpected}"
+                    f"Milestone 1 endpoints are missing: {missing}",
+                    "The Milestone 1 surface must survive every later milestone.",
                 )
             else:
                 check.ok(
-                    "No endpoints outside Milestone 1 scope. No infrastructure "
-                    "integration and no action-executing capability is present."
+                    "Every Milestone 1 endpoint is still present: "
+                    + ", ".join(MILESTONE_1_ENDPOINTS)
+                )
+
+            # Later milestones legitimately add endpoints, so their presence is
+            # not a Milestone 1 failure. This check originally asserted that
+            # nothing outside /health and /whoami existed, which made it fail on
+            # a correct Milestone 2 deployment - a false alarm, and the same
+            # stale-scope-assertion defect that was corrected in
+            # verify_milestone2.py. Scope enforcement now lives where it can be
+            # kept current: the Milestone 2 required-route contract and
+            # tests/unit/test_api_identity.py.
+            later = [
+                path
+                for path in paths
+                if not path.startswith(("/health", "/whoami", "/cmdb"))
+            ]
+            if later:
+                check.warn(
+                    "Endpoints outside Milestones 1-2 are exposed, which no "
+                    f"accepted milestone justifies: {later}"
+                )
+            else:
+                check.ok(
+                    "No endpoints beyond the accepted milestones. No "
+                    "infrastructure integration and no action-executing "
+                    "capability is present."
                 )
         else:
             check.warn("OpenAPI schema is disabled (ACOP_DOCS_ENABLED=false).")

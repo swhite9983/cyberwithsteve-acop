@@ -48,7 +48,49 @@ PASS = "[ PASS ]"  # noqa: S105 - an output label, not a credential
 FAIL = "[ FAIL ]"
 WARN = "[ WARN ]"
 
-# RFC 5737 / RFC 7042 documentation values. Real addresses in a verification
+#: The Milestone 2 REST contract, as (method, path) pairs. This is the
+#: acceptance criterion: every operation here must be registered, and the check
+#: names precisely which are missing. Counting paths - the previous form - was
+#: brittle and, worse, uninformative: it could not say what was absent, and it
+#: was compared against a total that silently included /health and /whoami.
+#:
+#: tests/unit/test_api_identity.py asserts the running application registers
+#: exactly this set, so the verifier and the API cannot drift apart.
+REQUIRED_ROUTES: frozenset[tuple[str, str]] = frozenset(
+    {
+        # Assets and identity
+        ("POST", "/cmdb/assets"),
+        ("GET", "/cmdb/assets"),
+        ("POST", "/cmdb/assets/resolve"),
+        ("GET", "/cmdb/assets/{asset_id}"),
+        ("PATCH", "/cmdb/assets/{asset_id}"),
+        ("POST", "/cmdb/assets/{asset_id}/retire"),
+        ("GET", "/cmdb/assets/{asset_id}/identifiers"),
+        ("POST", "/cmdb/assets/{asset_id}/identifiers"),
+        ("POST", "/cmdb/identifiers/{identifier_id}/retire"),
+        # Facts, history and trust
+        ("POST", "/cmdb/assets/{asset_id}/facts"),
+        ("GET", "/cmdb/assets/{asset_id}/facts"),
+        ("GET", "/cmdb/assets/{asset_id}/facts/{predicate}/history"),
+        ("GET", "/cmdb/assets/{asset_id}/facts/{predicate}/effective"),
+        ("GET", "/cmdb/assets/{asset_id}/conflicts"),
+        ("POST", "/cmdb/assets/{asset_id}/desired-facts"),
+        ("GET", "/cmdb/facts/{fact_id}/attestations"),
+        ("POST", "/cmdb/facts/{fact_id}/verify"),
+        ("POST", "/cmdb/facts/{fact_id}/revoke"),
+        # Relationships
+        ("POST", "/cmdb/relationships"),
+        ("GET", "/cmdb/relationships"),
+        ("POST", "/cmdb/relationships/{relationship_id}/retire"),
+        ("GET", "/cmdb/assets/{asset_id}/related"),
+    }
+)
+
+#: The provider-neutral Principal field every attestation carries. Named here
+#: so the acceptance check and the unit test that guards it share one literal.
+ATTESTATION_SUBJECT_FIELD = "principal_subject"
+
+# RFC 5737 / RFC 7042 documentation values. Real identifiers in a verification
 # script eventually get copied into something that dials them.
 DOC_SERIAL_PREFIX = "DOC-M2-VERIFY"
 MEM_16 = 17179869184
@@ -126,15 +168,37 @@ async def verify(
             return 1
         check.ok(f"API is live at {base_url}.")
 
-        # 1. Schema present --------------------------------------------------
+        # 1. Required REST contract present -----------------------------------
         schema = await client.get("/openapi.json")
         paths = schema.json().get("paths", {})
-        cmdb_paths = {p for p in paths if p.startswith("/cmdb")}
+        registered = {
+            (method.upper(), path)
+            for path, operations in paths.items()
+            for method in operations
+        }
+        missing = sorted(REQUIRED_ROUTES - registered)
         check.expect(
-            len(cmdb_paths) == 21,
-            f"CMDB exposes {len(cmdb_paths)} endpoints (expected 21).",
-            "Run `alembic upgrade head` and restart the API.",
+            not missing,
+            f"All {len(REQUIRED_ROUTES)} required Milestone 2 operations are registered.",
+            (
+                "Missing: "
+                + ", ".join(f"{m} {p}" for m, p in missing)
+                + ". These are route registrations, not schema objects - check "
+                "src/acop/api/router.py and the cmdb route modules. A database "
+                "migration cannot create a FastAPI route."
+            )
+            if missing
+            else None,
         )
+        extra_cmdb = sorted(
+            {(m, p) for m, p in registered if p.startswith("/cmdb")} - REQUIRED_ROUTES
+        )
+        if extra_cmdb:
+            check.warn(
+                "CMDB operations present but not in the Milestone 2 contract: "
+                + ", ".join(f"{m} {p}" for m, p in extra_cmdb)
+                + ". Scope creep, or the contract needs updating deliberately."
+            )
         check.expect(
             all("delete" not in ops for ops in paths.values()),
             "No DELETE verb exists anywhere in the API.",
@@ -301,10 +365,12 @@ async def verify(
             f"({actions}).",
             "Revocation must not erase historical accountability.",
         )
-        subjects = {row["actor_subject"] for row in attestations.json()}
+        subjects = {row.get(ATTESTATION_SUBJECT_FIELD) for row in attestations.json()}
         check.expect(
             bool(subjects) and all(subjects),
             f"Every attestation names the acting principal ({sorted(subjects)}).",
+            f"Attestations must carry {ATTESTATION_SUBJECT_FIELD!r}, the "
+            "provider-neutral Principal field used everywhere else.",
         )
 
         # 8. Secrets are refused, and never echoed -------------------------------
@@ -348,8 +414,16 @@ async def verify(
                 reverse = await client.get(
                     f"/cmdb/assets/{second_id}/related", headers=operator
                 )
-                forward_labels = {n["label"] for n in forward.json()}
-                reverse_labels = {n["label"] for n in reverse.json()}
+                # The endpoint returns NeighbourList - {asset_id, neighbours} -
+                # not a bare array. Reading it as a list was the same class of
+                # mistake as the attestation field name: the verifier assumed a
+                # response shape instead of following the response model.
+                forward_labels = {
+                    n["label"] for n in forward.json().get("neighbours", [])
+                }
+                reverse_labels = {
+                    n["label"] for n in reverse.json().get("neighbours", [])
+                }
                 check.expect(
                     "RUNS_ON" in forward_labels and "HOSTS" in reverse_labels,
                     f"One stored edge reads as RUNS_ON forward and HOSTS in reverse "

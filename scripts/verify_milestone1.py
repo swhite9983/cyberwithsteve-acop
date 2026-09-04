@@ -225,16 +225,18 @@ async def verify(base_url: str, api_key: str | None) -> int:
             # a correct Milestone 2 deployment - a false alarm, and the same
             # stale-scope-assertion defect that was corrected in
             # verify_milestone2.py. Scope enforcement now lives where it can be
-            # kept current: the Milestone 2 required-route contract and
+            # kept current: the per-milestone required-route contracts and
             # tests/unit/test_api_identity.py.
-            later = [
-                path
-                for path in paths
-                if not path.startswith(("/health", "/whoami", "/cmdb"))
-            ]
+            # This prefix list is the one thing here that must be kept current
+            # as milestones land. It is a *scope* guard, not a contract: the
+            # per-milestone required-route sets in verify_milestone2.py and
+            # verify_milestone3.py, pinned by unit tests, are what actually
+            # enforce each API surface.
+            accepted_prefixes = ("/health", "/whoami", "/cmdb", "/knowledge")
+            later = [path for path in paths if not path.startswith(accepted_prefixes)]
             if later:
                 check.warn(
-                    "Endpoints outside Milestones 1-2 are exposed, which no "
+                    "Endpoints outside Milestones 1-3 are exposed, which no "
                     f"accepted milestone justifies: {later}"
                 )
             else:

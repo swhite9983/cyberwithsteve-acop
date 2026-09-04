@@ -57,6 +57,12 @@ def _base_settings(**overrides: object) -> Settings:
         "ollama_generate_timeout_seconds": 5.0,
         "db_connect_timeout_seconds": 1.0,
         "health_cache_ttl_seconds": 0.0,
+        # A fixed, obviously-fake salt. Fingerprints must be stable within a
+        # test run so idempotence and disposition scoping can be asserted at
+        # all; the production validator refuses an empty one outside
+        # development, which is what keeps this from being a real default.
+        "knowledge_fingerprint_salt": "acop-test-fingerprint-salt",
+        "knowledge_embedding_base_url": OLLAMA_BASE_URL,
         "auth_enabled": True,
         "api_keys": [
             ApiKeyPrincipalConfig(

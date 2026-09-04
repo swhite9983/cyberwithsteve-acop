@@ -79,14 +79,14 @@ def _verifier() -> ModuleType:
 
 
 class TestMilestoneScope:
-    async def test_only_milestone_2_endpoints_are_exposed(
+    async def test_only_milestone_3_endpoints_are_exposed(
         self, client: httpx.AsyncClient
     ) -> None:
         """Guard against scope creep.
 
-        Milestone 2 exposes health, identity and the CMDB. Nothing that reads
-        or changes infrastructure exists yet, and this test fails if an
-        endpoint appears without the milestone that justifies it.
+        Milestones 1-3 expose health, identity, the CMDB and knowledge. Nothing
+        that reads or changes infrastructure exists yet, and this test fails if
+        an endpoint appears without the milestone that justifies it.
         """
         schema = (await client.get("/openapi.json")).json()
         assert set(schema["paths"]) == {
@@ -111,6 +111,24 @@ class TestMilestoneScope:
             "/cmdb/identifiers/{identifier_id}/retire",
             "/cmdb/relationships",
             "/cmdb/relationships/{relationship_id}/retire",
+            "/knowledge/attempts",
+            "/knowledge/attempts/{attempt_id}",
+            "/knowledge/chunks/{chunk_id}/mentions",
+            "/knowledge/documents",
+            "/knowledge/documents/{document_id}",
+            "/knowledge/documents/{document_id}/retire",
+            "/knowledge/documents/{document_id}/versions",
+            "/knowledge/embedding-spaces",
+            "/knowledge/embedding-spaces/{space_id}/verify-prefixes",
+            "/knowledge/evidence",
+            "/knowledge/findings/{finding_id}/dispositions",
+            "/knowledge/search",
+            "/knowledge/sources",
+            "/knowledge/sources/{source_id}",
+            "/knowledge/sources/{source_id}/reclassify",
+            "/knowledge/sources/{source_id}/retire",
+            "/knowledge/versions/{version_id}/chunks",
+            "/knowledge/versions/{version_id}/mentions/scan",
         }
 
     async def test_verifier_required_route_contract_matches_the_api(

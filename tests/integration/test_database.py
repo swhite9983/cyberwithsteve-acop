@@ -80,10 +80,16 @@ class TestMigrations:
         assert "audit_event" in tables
         assert "alembic_version" in tables
 
-    async def test_milestone_2_creates_exactly_the_expected_tables(
+    async def test_milestone_3_creates_exactly_the_expected_tables(
         self, migrated_database
     ) -> None:
-        # Scope guard: no speculative Milestone 3+ tables.
+        """Scope guard: no speculative Milestone 4+ tables.
+
+        Widened deliberately at each milestone. Embedding-space *partitions*
+        are excluded because they are created at runtime by space
+        registration, not by a migration - the same reason
+        ``migrations/env.py`` filters them out of autogenerate.
+        """
         async with migrated_database.engine.connect() as connection:
             result = await connection.execute(
                 text(
@@ -91,14 +97,31 @@ class TestMigrations:
                     "WHERE table_schema = 'public' AND table_name <> 'alembic_version'"
                 )
             )
-            tables = {row[0] for row in result}
+            tables = {
+                row[0]
+                for row in result
+                if not row[0].startswith("knowledge_embedding_d768_")
+            }
         assert tables == {
+            # Milestone 1
             "audit_event",
+            # Milestone 2
             "asset",
             "asset_identifier",
             "asset_fact",
             "fact_attestation",
             "asset_relationship",
+            # Milestone 3
+            "knowledge_source",
+            "knowledge_document",
+            "knowledge_document_version",
+            "knowledge_chunk",
+            "knowledge_ingest_attempt",
+            "knowledge_finding",
+            "knowledge_finding_disposition",
+            "knowledge_asset_mention",
+            "embedding_space",
+            "knowledge_embedding_d768",
         }
 
     async def test_timestamps_are_timezone_aware(self, migrated_database) -> None:

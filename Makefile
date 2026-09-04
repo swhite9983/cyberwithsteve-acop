@@ -110,5 +110,13 @@ verify: ## Full Milestone 1 acceptance check against a running stack
 verify-cmdb: ## Full Milestone 2 CMDB acceptance check (needs operator + approver keys)
 	$(VENV_PYTHON) scripts/verify_milestone2.py
 
+.PHONY: verify-knowledge
+verify-knowledge: ## Full Milestone 3 knowledge/RAG acceptance check (needs operator + approver + admin keys)
+	$(VENV_PYTHON) scripts/verify_milestone3.py
+
+.PHONY: probe-embedding-prefixes
+probe-embedding-prefixes: ## Observe the embedding provider's prompt-prefix behaviour (run before first ingest)
+	$(VENV_PYTHON) scripts/probe_embedding_prefixes.py
+
 .PHONY: verify-all
-verify-all: verify verify-cmdb ## Run every milestone acceptance check in order
+verify-all: verify verify-cmdb verify-knowledge ## Run every milestone acceptance check in order

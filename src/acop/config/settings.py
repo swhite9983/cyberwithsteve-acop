@@ -146,6 +146,43 @@ class Settings(BaseSettings):
     ollama_keep_alive: str = "10m"
 
     # ------------------------------------------------------------------
+    # Knowledge (Milestone 3)
+    # ------------------------------------------------------------------
+    knowledge_embedding_base_url: str = "http://127.0.0.1:11434"
+    """Embedding provider endpoint. **Separate from ``ollama_base_url`` on
+    purpose**: the reasoning model and the embedding model are different models
+    with different resource profiles and may well live on different hosts.
+    Collapsing them would make moving either one a change to every deployment's
+    configuration shape rather than to one value."""
+
+    knowledge_embedding_model: str = "embeddinggemma:latest"
+    knowledge_embedding_dimensions: int = 768
+    knowledge_embedding_timeout_seconds: float = 120.0
+    knowledge_embedding_normalize: bool = True
+
+    knowledge_fingerprint_salt: SecretStr = SecretStr("")
+    """HMAC key for secret-finding fingerprints.
+
+    Salted so the findings table cannot become an offline-crackable dictionary
+    of the estate's secrets. Required outside development: a shipped default
+    salt would give the appearance of protection with none of the substance,
+    so the validator below refuses to start without a real one."""
+
+    knowledge_retrieval_k: int = 10
+    knowledge_ann_overfetch: int = 8
+    knowledge_ann_candidate_cap: int = 2000
+    knowledge_hnsw_ef_search: int = 100
+    knowledge_hnsw_iterative_scan: str | None = None
+    """pgvector 0.8+ only. Applied when the running server has the setting and
+    ignored when it does not, so one configuration spans 0.6 in development and
+    0.8.6 in production."""
+
+    knowledge_exact_fallback_enabled: bool = True
+    knowledge_exact_max_rows: int = 50_000
+    knowledge_exact_timeout_ms: int = 5_000
+    knowledge_lexical_limit: int = 100
+
+    # ------------------------------------------------------------------
     # Health
     # ------------------------------------------------------------------
     health_cache_ttl_seconds: float = 10.0
@@ -209,6 +246,29 @@ class Settings(BaseSettings):
         if duplicates:
             raise ValueError(
                 f"Duplicate API key subjects configured: {sorted(duplicates)}"
+            )
+        return value
+
+    @field_validator("knowledge_fingerprint_salt")
+    @classmethod
+    def _require_fingerprint_salt(
+        cls, value: SecretStr, info: ValidationInfo
+    ) -> SecretStr:
+        """Refuse to run outside development without a real salt.
+
+        An empty or shipped salt makes every deployment's fingerprints
+        identical and precomputable, which turns the findings table from a
+        redacted record into a lookup table for the estate's secrets. Failing
+        at startup is the only honest response.
+        """
+        environment = info.data.get("environment", Environment.DEVELOPMENT)
+        if not value.get_secret_value() and environment in (
+            Environment.STAGING,
+            Environment.PRODUCTION,
+        ):
+            raise ValueError(
+                "ACOP_KNOWLEDGE_FINGERPRINT_SALT must be set outside "
+                "development. Generate one with `openssl rand -hex 32`."
             )
         return value
 

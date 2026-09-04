@@ -29,6 +29,17 @@ from acop.services import (
     IdentityResolver,
     RelationshipService,
 )
+from acop.services.knowledge import (
+    AssetMentionService,
+    DocumentScreen,
+    EmbeddingProvider,
+    EmbeddingSpaceService,
+    KnowledgeCatalogService,
+    KnowledgeIngestService,
+    KnowledgeRetrievalService,
+    OllamaEmbeddingProvider,
+    RetrievalConfig,
+)
 
 
 def get_settings_dep(request: Request) -> Settings:
@@ -215,22 +226,118 @@ def get_relationship_service(
     return RelationshipService(session)
 
 
+# ---------------------------------------------------------------------------
+# Knowledge services (Milestone 3)
+# ---------------------------------------------------------------------------
+def get_embedding_provider(
+    settings: Annotated[Settings, Depends(get_settings_dep)],
+) -> EmbeddingProvider:
+    """Return the configured embedding provider.
+
+    Constructed per request rather than held on ``app.state`` because it owns
+    no pooled resource - it opens an HTTP client per call and closes it. The
+    production wiring only ever builds the Ollama provider; the deterministic
+    one exists for tests and is never reachable from here.
+    """
+    return OllamaEmbeddingProvider(
+        settings.knowledge_embedding_base_url,
+        settings.knowledge_embedding_model,
+        timeout_seconds=settings.knowledge_embedding_timeout_seconds,
+        normalize=settings.knowledge_embedding_normalize,
+        expected_dimensions=settings.knowledge_embedding_dimensions,
+    )
+
+
+def get_document_screen(
+    settings: Annotated[Settings, Depends(get_settings_dep)],
+) -> DocumentScreen:
+    """Return the screening detector set, keyed with the deployment's salt."""
+    return DocumentScreen(settings.knowledge_fingerprint_salt.get_secret_value())
+
+
+def get_retrieval_config(
+    settings: Annotated[Settings, Depends(get_settings_dep)],
+) -> RetrievalConfig:
+    return RetrievalConfig(
+        k=settings.knowledge_retrieval_k,
+        ann_overfetch=settings.knowledge_ann_overfetch,
+        ann_candidate_cap=settings.knowledge_ann_candidate_cap,
+        hnsw_ef_search=settings.knowledge_hnsw_ef_search,
+        hnsw_iterative_scan=settings.knowledge_hnsw_iterative_scan,
+        exact_fallback_enabled=settings.knowledge_exact_fallback_enabled,
+        exact_max_rows=settings.knowledge_exact_max_rows,
+        exact_timeout_ms=settings.knowledge_exact_timeout_ms,
+        lexical_limit=settings.knowledge_lexical_limit,
+    )
+
+
+def get_embedding_space_service(
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> EmbeddingSpaceService:
+    return EmbeddingSpaceService(session)
+
+
+def get_knowledge_catalog_service(
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> KnowledgeCatalogService:
+    return KnowledgeCatalogService(session)
+
+
+def get_knowledge_ingest_service(
+    session: Annotated[AsyncSession, Depends(get_session)],
+    database: Annotated[Database, Depends(get_database)],
+    screen: Annotated[DocumentScreen, Depends(get_document_screen)],
+    embedder: Annotated[EmbeddingProvider, Depends(get_embedding_provider)],
+) -> KnowledgeIngestService:
+    """Return the ingest service.
+
+    The database handle is supplied as well as the session because a *failed*
+    attempt has to record itself outside the request transaction that is about
+    to be rolled back - the same mechanism as ``AuditService.record_denial``.
+    """
+    return KnowledgeIngestService(
+        session, screen=screen, embedder=embedder, database=database
+    )
+
+
+def get_knowledge_retrieval_service(
+    session: Annotated[AsyncSession, Depends(get_session)],
+    embedder: Annotated[EmbeddingProvider, Depends(get_embedding_provider)],
+    config: Annotated[RetrievalConfig, Depends(get_retrieval_config)],
+) -> KnowledgeRetrievalService:
+    return KnowledgeRetrievalService(session, embedder=embedder, config=config)
+
+
+def get_asset_mention_service(
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> AssetMentionService:
+    return AssetMentionService(session)
+
+
 __all__ = [
     "ApproverPrincipal",
     "AuthenticationError",
     "CurrentPrincipal",
     "OperatorPrincipal",
     "ViewerPrincipal",
+    "get_asset_mention_service",
     "get_asset_service",
     "get_audit_service",
     "get_authenticator",
     "get_database",
+    "get_document_screen",
+    "get_embedding_provider",
+    "get_embedding_space_service",
     "get_fact_service",
     "get_health_service",
     "get_identity_resolver",
+    "get_knowledge_catalog_service",
+    "get_knowledge_ingest_service",
+    "get_knowledge_retrieval_service",
     "get_ollama",
     "get_principal",
     "get_relationship_service",
+    "get_retrieval_config",
     "get_session",
     "get_settings_dep",
     "require_roles",

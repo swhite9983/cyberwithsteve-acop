@@ -91,3 +91,10 @@ plugins = ["pydantic.mypy"]
 [[tool.mypy.overrides]]
 module = ["tests.*"]
 disallow_untyped_defs = false
+
+# pgvector ships no py.typed marker. Its SQLAlchemy integration is a thin
+# TypeDecorator; the columns using it are annotated explicitly on the ACOP
+# side, so nothing here is left untyped in ACOP's own code.
+[[tool.mypy.overrides]]
+module = ["pgvector.*"]
+ignore_missing_imports = true

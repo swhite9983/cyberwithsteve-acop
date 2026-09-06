@@ -33,9 +33,16 @@ class AssetType(StrEnum):
     ``MAC_ADDRESS`` is retained for import fidelity but is not the canonical
     representation - a MAC is the durable identity of a NIC, so it lives in the
     ``mac`` identifier namespace. See ``DISCOURAGED_ASSET_TYPES``.
+
+    ``CLUSTER`` is a grouping of hosts that presents itself as one management
+    surface - a Proxmox cluster, and later anything with the same shape. It is
+    a distinct type rather than a ``DEVICE`` because it has no chassis, no
+    serial and no power draw, and because the hosts inside it must be able to
+    say ``MEMBER_OF`` something that is honestly not a device.
     """
 
     DEVICE = "DEVICE"
+    CLUSTER = "CLUSTER"
     HOST = "HOST"
     VM = "VM"
     CONTAINER = "CONTAINER"
@@ -139,7 +146,7 @@ class AttestationAction(StrEnum):
 PREDICATE_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_]*(\.[a-z0-9_]+)*$")
 
 #: Namespace names allow ':' so a source can scope its own ids, e.g.
-#: 'proxmox:vmid'.
+#: 'proxmox:guest'.
 NAMESPACE_PATTERN = re.compile(r"^[a-z0-9]+(:[a-z0-9_-]+)*$")
 
 
@@ -241,14 +248,40 @@ IDENTIFIER_NAMESPACES: dict[str, NamespaceSpec] = {
             "Retire rather than move when a NIC is replaced",
             "mac",
         ),
+        # Proxmox. Every composite below is scoped by ``proxmox:instance`` -
+        # an ACOP-owned string that names one configured connection - and
+        # never by the cluster name, which Proxmox owns and an administrator
+        # can rename. A correlator built on a value somebody else can change
+        # orphans every asset under it the day they change it.
+        #
+        # ``proxmox:vmid`` and ``proxmox:cluster`` were removed here. A bare
+        # VMID is reissued after deletion and was registered non-unique, which
+        # meant it never participated in identity resolution at all: every
+        # guest lacking a SMBIOS UUID was created fresh on every sweep. The
+        # instance-scoped form below is unique, so it correlates - and the
+        # reuse it must not silently absorb is handled by retiring the old
+        # identifier, never by merging.
         NamespaceSpec(
-            "proxmox:vmid",
-            False,
-            "REUSED after deletion - never unique alone; pair with proxmox:cluster",
-            "digits",
+            "proxmox:instance",
+            True,
+            "ACOP-owned id for one configured Proxmox connection; never derived",
+        ),
+        NamespaceSpec(
+            "proxmox:node",
+            True,
+            "<instance>/<node>",
+        ),
+        NamespaceSpec(
+            "proxmox:guest",
+            True,
+            "<instance>/<vmid>; QEMU and LXC share one VMID space",
+        ),
+        NamespaceSpec(
+            "proxmox:storage",
+            True,
+            "<instance>/<storage_id>",
         ),
         NamespaceSpec("proxmox:uuid", True, "The safe Proxmox correlator"),
-        NamespaceSpec("proxmox:cluster", False, "Scopes a vmid"),
         NamespaceSpec("docker:container-id", True, "New id on recreate, expected"),
         NamespaceSpec("hostname", False, "Correlation hint only", "hostname"),
         NamespaceSpec("fqdn", False, "Correlation hint only", "hostname"),
@@ -318,7 +351,11 @@ RELATIONSHIP_SPECS: dict[RelationshipType, EdgeSpec] = {
         symmetric=False,
         inverse_label="HAS_MEMBER",
         sources=frozenset({AssetType.SWITCH_PORT, AssetType.HOST, AssetType.VM}),
-        targets=frozenset({AssetType.VLAN, AssetType.DEVICE}),
+        # CLUSTER is added to the *targets* only. A host joins a cluster; a
+        # cluster is not a member of anything, and widening the source set
+        # would let one cluster be declared a member of another with nothing
+        # to say what that means.
+        targets=frozenset({AssetType.VLAN, AssetType.DEVICE, AssetType.CLUSTER}),
     ),
     RelationshipType.RUNS_ON: EdgeSpec(
         symmetric=False,

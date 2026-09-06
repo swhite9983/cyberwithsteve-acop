@@ -42,6 +42,17 @@ class TestAssetTypes:
         """The canonical representation, per the approved ruling."""
         assert IDENTIFIER_NAMESPACES["mac"].unique is True
 
+    def test_cluster_is_an_asset_type(self) -> None:
+        """Milestone 5. A Proxmox cluster needs a type of its own.
+
+        Without it the only ``MEMBER_OF`` targets are ``VLAN`` and ``DEVICE``,
+        so a cluster would have to be stored as a device - a false type at the
+        root of the graph, inherited by every node edge and every cluster-level
+        fact hanging off it.
+        """
+        assert AssetType.CLUSTER in AssetType
+        assert AssetType.CLUSTER.value == "CLUSTER"
+
 
 class TestProvenanceDefaults:
     @pytest.mark.parametrize("source", list(SourceType))
@@ -151,11 +162,97 @@ class TestIdentifierNormalisation:
             == "DOCSERIAL0001"
         )
 
-    def test_proxmox_vmid_is_never_unique(self) -> None:
-        """VMIDs are reissued after deletion - the most dangerous correlator."""
+    def test_the_stale_proxmox_namespaces_are_gone(self) -> None:
+        """``proxmox:vmid`` and ``proxmox:cluster`` were removed in Milestone 5.
+
+        Both were registered non-unique, which meant neither participated in
+        identity resolution at all: a guest without a SMBIOS UUID matched
+        nothing and was created fresh on every sweep. The instance-scoped
+        replacements are unique, so they correlate.
+        """
+        assert "proxmox:vmid" not in IDENTIFIER_NAMESPACES
+        assert "proxmox:cluster" not in IDENTIFIER_NAMESPACES
+
+    def test_a_stale_namespace_still_normalises_but_correlates_nothing(self) -> None:
+        """Removing a registration does not reject the value, and must not.
+
+        An unregistered namespace is accepted and forced non-unique, so an
+        identifier row written under the old name before this change keeps
+        working and simply stops being a correlator - which is what it already
+        was. Nothing needs migrating.
+        """
         assert not normalise(
             IdentifierInput(namespace="proxmox:vmid", value="200")
         ).unique_in_namespace
+
+    @pytest.mark.parametrize(
+        "namespace",
+        [
+            "proxmox:instance",
+            "proxmox:node",
+            "proxmox:guest",
+            "proxmox:storage",
+            "proxmox:uuid",
+        ],
+    )
+    def test_every_proxmox_namespace_is_unique(self, namespace: str) -> None:
+        """All five correlate, because all five values are already scoped.
+
+        Each value carries the ACOP-owned instance id (or, for
+        ``proxmox:uuid``, is globally unique on its own), so it names one
+        object in one installation and can belong to at most one **live**
+        asset. Uniqueness here is what puts ``unique_in_namespace = true`` on
+        the row, which is what brings the partial unique index into play -
+        without it the namespace would not participate in identity resolution
+        at all.
+        """
+        assert IDENTIFIER_NAMESPACES[namespace].unique is True
+        assert normalise(
+            IdentifierInput(namespace=namespace, value="homelab-pve/100")
+        ).unique_in_namespace
+
+    def test_uniqueness_is_scoped_to_live_rows(self) -> None:
+        """Unique does not mean "used once, ever".
+
+        The index is partial - ``WHERE retired_at IS NULL AND
+        unique_in_namespace`` - so retiring an identifier frees its value. That
+        is exactly what makes legitimate VMID reuse representable without a
+        merge: the old asset keeps its history, its identifier is retired, and
+        the reused value resolves to nothing and creates a new asset. The
+        database half of this is proved in
+        ``tests/integration/test_cmdb_constraints.py``.
+        """
+        spec = IDENTIFIER_NAMESPACES["proxmox:guest"]
+        assert spec.unique is True
+        assert "vmid" in spec.note or "VMID" in spec.note
+
+    def test_an_instance_scoped_value_survives_normalisation_intact(self) -> None:
+        """The separator must not be eaten.
+
+        These values are composites - ``<instance>/<vmid>`` - and the default
+        normaliser only trims and lowercases. A ``digits`` normaliser, which
+        the old ``proxmox:vmid`` used, would strip the instance and the slash
+        and collapse every instance into one namespace.
+        """
+        assert (
+            normalise(
+                IdentifierInput(namespace="proxmox:guest", value=" HomeLab-PVE/100 ")
+            ).value_normalized
+            == "homelab-pve/100"
+        )
+
+    def test_the_cluster_name_is_not_an_identity(self) -> None:
+        """The reason ``proxmox:cluster`` is gone rather than merely unused.
+
+        An administrator can rename a Proxmox cluster. Any identifier built on
+        that name would change for every asset at once, orphaning all of them.
+        The instance id is ACOP-owned precisely so nothing outside ACOP can
+        change it.
+        """
+        assert not any(
+            name.startswith("proxmox:") and "cluster" in name
+            for name in IDENTIFIER_NAMESPACES
+        )
 
     def test_hostname_is_never_unique(self) -> None:
         assert not normalise(
@@ -189,6 +286,57 @@ class TestRelationshipRegistry:
         spec = RELATIONSHIP_SPECS[RelationshipType.RUNS_ON]
         assert spec.permits(AssetType.VM, AssetType.HOST)
         assert not spec.permits(AssetType.VLAN, AssetType.GPU)
+
+    def test_a_host_may_be_a_member_of_a_cluster(self) -> None:
+        """Milestone 5's one relationship change."""
+        spec = RELATIONSHIP_SPECS[RelationshipType.MEMBER_OF]
+        assert spec.permits(AssetType.HOST, AssetType.CLUSTER)
+
+    def test_member_of_was_widened_only_on_the_target_side(self) -> None:
+        """A host joins a cluster. A cluster joins nothing.
+
+        Widening the source set as well would let one cluster be declared a
+        member of another with nothing to say what that means, and the
+        constraint is only worth having while it is narrow.
+        """
+        spec = RELATIONSHIP_SPECS[RelationshipType.MEMBER_OF]
+        assert spec.sources == frozenset(
+            {AssetType.SWITCH_PORT, AssetType.HOST, AssetType.VM}
+        )
+        assert spec.targets == frozenset(
+            {AssetType.VLAN, AssetType.DEVICE, AssetType.CLUSTER}
+        )
+        assert not spec.permits(AssetType.CLUSTER, AssetType.CLUSTER)
+        assert not spec.permits(AssetType.CLUSTER, AssetType.DEVICE)
+
+    def test_no_other_relationship_learned_about_clusters(self) -> None:
+        """The one change is ``MEMBER_OF`` targets. Nothing else moved.
+
+        A cluster is not an interface holder, not a storage consumer, not a
+        run-target and not a dependency endpoint, and none of those edge specs
+        may quietly have gained it.
+        """
+        for kind, spec in RELATIONSHIP_SPECS.items():
+            if kind is RelationshipType.MEMBER_OF:
+                continue
+            assert AssetType.CLUSTER not in spec.sources, kind
+            assert AssetType.CLUSTER not in spec.targets, kind
+
+    def test_previously_invalid_combinations_are_still_invalid(self) -> None:
+        """The regression guard for a widening that went too far."""
+        member_of = RELATIONSHIP_SPECS[RelationshipType.MEMBER_OF]
+        assert not member_of.permits(AssetType.SERVICE, AssetType.VLAN)
+        assert not member_of.permits(AssetType.HOST, AssetType.SERVICE)
+
+        has_interface = RELATIONSHIP_SPECS[RelationshipType.HAS_INTERFACE]
+        assert not has_interface.permits(AssetType.CONTAINER, AssetType.NETWORK_INTERFACE)
+        assert not has_interface.permits(AssetType.HOST, AssetType.VM)
+
+        uses_storage = RELATIONSHIP_SPECS[RelationshipType.USES_STORAGE]
+        assert not uses_storage.permits(AssetType.CONTAINER, AssetType.STORAGE_DEVICE)
+
+        ip_assigned = RELATIONSHIP_SPECS[RelationshipType.IP_ASSIGNED_TO]
+        assert not ip_assigned.permits(AssetType.NETWORK_INTERFACE, AssetType.IP_ADDRESS)
 
     def test_relationship_names_are_reserved_predicates(self) -> None:
         """Storing an edge as a fact too would be silent dual representation."""

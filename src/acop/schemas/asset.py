@@ -37,7 +37,7 @@ class IdentifierInput(BaseModel):
         if not NAMESPACE_PATTERN.match(lowered):
             raise ValueError(
                 "namespace must be lowercase segments separated by ':', "
-                "e.g. 'serial' or 'proxmox:vmid'"
+                "e.g. 'serial' or 'proxmox:guest'"
             )
         return lowered
 

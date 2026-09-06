@@ -328,9 +328,13 @@ class MentionSource(StrEnum):
 #: Identifier namespaces whose values may be matched against document text.
 #:
 #: Deliberately a *subset*, and the exclusions are the interesting part. A
-#: ``proxmox:vmid`` or a ``cisco:if-index`` is a bare integer; "VLAN 100" in a
-#: runbook would match VMID 100 and produce a mention that is textually exact
-#: and factually nonsense. ``acop:legacy-id`` is free-form for the same reason.
+#: ``cisco:if-index`` is a bare integer; "VLAN 100" in a runbook would match
+#: interface index 100 and produce a mention that is textually exact and
+#: factually nonsense. ``acop:legacy-id`` is free-form for the same reason.
+#: Milestone 5's ``proxmox:guest`` is *not* an instance of that hazard - its
+#: value is ``<instance>/<vmid>``, which prose does not contain by accident -
+#: so its absence here is simply a decision nobody has yet made, not the
+#: bare-integer exclusion above.
 #: What remains is either globally unique by construction (serial, SMBIOS UUID,
 #: MAC, Proxmox UUID, container id) or name-shaped and low-collision (hostname,
 #: FQDN) - values whose literal appearance in prose really is evidence that the

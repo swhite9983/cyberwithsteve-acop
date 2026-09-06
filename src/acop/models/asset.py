@@ -105,8 +105,8 @@ class AssetIdentifier(UUIDPrimaryKeyMixin, TimestampMixin, Base):
 
     ``unique_in_namespace`` is denormalised from the code registry so that one
     partial unique index can enforce global uniqueness for the namespaces that
-    have it (serial, smbios:uuid) while leaving those that genuinely do not
-    (hostname, proxmox:vmid) unconstrained.
+    have it (serial, smbios:uuid, proxmox:guest) while leaving those that
+    genuinely do not (hostname, cisco:if-index) unconstrained.
     """
 
     __tablename__ = "asset_identifier"

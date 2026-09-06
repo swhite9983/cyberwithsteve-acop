@@ -186,9 +186,12 @@ target.
 | `resolution <> 'AMBIGUOUS' OR array_length(candidate_asset_ids, 1) > 1` | Ambiguity means more than one candidate, recorded. |
 | `mention_source IN ('IDENTIFIER_MATCH','EXPLICIT')` | Two sources, and no third. No NLP, no fuzzy matching. |
 
-`MENTIONABLE_NAMESPACES` is a code registry, not a column: `proxmox:vmid` and
-`cisco:if-index` are bare integers, and "VLAN 100" in a runbook would otherwise
-link the document to VMID 100 — textually exact, factually absurd.
+`MENTIONABLE_NAMESPACES` is a code registry, not a column: `cisco:if-index` is
+a bare integer, and "VLAN 100" in a runbook would otherwise link the document to
+interface index 100 — textually exact, factually absurd. Milestone 5's
+`proxmox:guest` is safe from that failure by construction rather than by
+exclusion: its value is `<instance>/<vmid>`, which no prose contains by
+accident.
 
 ## Identifier length
 

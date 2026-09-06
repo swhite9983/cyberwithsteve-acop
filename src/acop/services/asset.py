@@ -116,8 +116,8 @@ class AssetService:
                     "identifier filter must be 'namespace:value', e.g. 'serial:ABC123'."
                 )
             namespace, _, value = identifier.partition(":")
-            # A namespace may itself contain ':' (proxmox:vmid). Split on the
-            # last colon so 'proxmox:vmid:200' resolves correctly.
+            # A namespace may itself contain ':' (proxmox:guest). Split on the
+            # last colon so 'proxmox:guest:homelab-pve/100' resolves correctly.
             if identifier.count(":") > 1:
                 namespace, _, value = identifier.rpartition(":")
             normalised = normalise(

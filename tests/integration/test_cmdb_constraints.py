@@ -420,6 +420,132 @@ class TestDuplicateLiveIdentifiers:
                     },
                 )
 
+    async def test_two_live_assets_cannot_share_a_proxmox_guest(self, db) -> None:
+        """Milestone 5: the scoped guest identifier is a real correlator.
+
+        The value carries the ACOP-owned instance id, so ``homelab-pve/100``
+        names one guest in one Proxmox installation and can therefore belong to
+        at most one live asset. That is what makes it usable for identity
+        resolution at all - the removed ``proxmox:vmid`` was registered
+        non-unique, so it matched nothing and every LXC container would have
+        been created fresh on every sweep.
+
+        Proved with raw SQL against the partial unique index rather than
+        through the service, because a future collector with a bug does not go
+        through the service.
+        """
+        async with db.session() as session:
+            await session.execute(
+                self.IDENT_INSERT,
+                {
+                    "id": uuid.uuid4(),
+                    "asset_id": ASSET_A,
+                    "ns": "proxmox:guest",
+                    "raw": "homelab-pve/100",
+                    "norm": "homelab-pve/100",
+                    "unique": True,
+                },
+            )
+
+        with pytest.raises(IntegrityError, match="uq_asset_identifier_live_unique"):
+            async with db.session() as session:
+                await session.execute(
+                    self.IDENT_INSERT,
+                    {
+                        "id": uuid.uuid4(),
+                        "asset_id": ASSET_B,
+                        "ns": "proxmox:guest",
+                        "raw": "homelab-pve/100",
+                        "norm": "homelab-pve/100",
+                        "unique": True,
+                    },
+                )
+
+    async def test_the_same_vmid_in_two_instances_is_not_a_collision(self, db) -> None:
+        """The reason the instance id is inside the value.
+
+        VMID 100 exists in almost every Proxmox installation. Scoping by the
+        instance is what stops two independently managed environments
+        colliding, and it is why the cluster name - which an administrator can
+        rename - is deliberately not what does the scoping.
+        """
+        async with db.session() as session:
+            for asset, value in (
+                (ASSET_A, "homelab-pve/100"),
+                (ASSET_B, "office-pve/100"),
+            ):
+                await session.execute(
+                    self.IDENT_INSERT,
+                    {
+                        "id": uuid.uuid4(),
+                        "asset_id": asset,
+                        "ns": "proxmox:guest",
+                        "raw": value,
+                        "norm": value,
+                        "unique": True,
+                    },
+                )
+            live = await session.scalar(
+                text(
+                    "SELECT count(*) FROM asset_identifier "
+                    "WHERE namespace = 'proxmox:guest' AND retired_at IS NULL"
+                )
+            )
+        assert live == 2
+
+    async def test_a_retired_guest_identifier_frees_the_vmid_for_reuse(self, db) -> None:
+        """VMID reuse, handled by retirement rather than by merging.
+
+        Proxmox reissues a VMID after a guest is deleted. The old asset keeps
+        its history and stays where it is; its scoped identifier is retired, so
+        the value stops matching and the reused VMID resolves to nothing and
+        creates a new asset. Nothing is merged and nothing is deleted - and
+        crucially, the new guest does **not** silently inherit the dead one's
+        facts.
+        """
+        first = uuid.uuid4()
+        async with db.session() as session:
+            await session.execute(
+                self.IDENT_INSERT,
+                {
+                    "id": first,
+                    "asset_id": ASSET_A,
+                    "ns": "proxmox:guest",
+                    "raw": "homelab-pve/100",
+                    "norm": "homelab-pve/100",
+                    "unique": True,
+                },
+            )
+            await session.execute(
+                text("UPDATE asset_identifier SET retired_at = now() WHERE id = :id"),
+                {"id": first},
+            )
+            await session.execute(
+                self.IDENT_INSERT,
+                {
+                    "id": uuid.uuid4(),
+                    "asset_id": ASSET_B,
+                    "ns": "proxmox:guest",
+                    "raw": "homelab-pve/100",
+                    "norm": "homelab-pve/100",
+                    "unique": True,
+                },
+            )
+            rows = await session.scalar(
+                text(
+                    "SELECT count(*) FROM asset_identifier "
+                    "WHERE namespace = 'proxmox:guest'"
+                )
+            )
+            live = await session.scalar(
+                text(
+                    "SELECT count(*) FROM asset_identifier "
+                    "WHERE namespace = 'proxmox:guest' AND retired_at IS NULL"
+                )
+            )
+        assert rows == 2, "the retired row is kept as history"
+        assert live == 1, "only the current guest holds the value"
+
     async def test_retiring_frees_the_value_for_reuse(self, db) -> None:
         """A replaced NIC's MAC, or a reissued Proxmox VMID."""
         first = uuid.uuid4()

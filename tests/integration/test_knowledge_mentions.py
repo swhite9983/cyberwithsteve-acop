@@ -222,9 +222,9 @@ class TestCandidateExtraction:
     def test_a_bare_number_is_never_a_candidate(self) -> None:
         """The failure this guard exists for.
 
-        ``proxmox:vmid`` and ``cisco:if-index`` are bare integers. "VLAN 100" in
-        a runbook would otherwise link the document to VMID 100 - textually
-        exact, factually absurd.
+        ``cisco:if-index`` is a bare integer. "VLAN 100" in a runbook would
+        otherwise link the document to interface index 100 - textually exact,
+        factually absurd.
         """
         found = candidates("VLAN 100 is the management VLAN. Port 24 is trunked.")
         assert all(not c.value_normalized.isdigit() for c in found)
@@ -332,15 +332,23 @@ class TestIdentifierMatching:
             report = await AssetMentionService(session).link_version(version_id, OPERATOR)
         assert report.mentions_created == 0
 
-    async def test_a_vlan_number_never_links_to_a_vmid(self, mdb: Database) -> None:
-        """The concrete false positive MENTIONABLE_NAMESPACES exists to prevent."""
+    async def test_a_vlan_number_never_links_to_an_interface_index(
+        self, mdb: Database
+    ) -> None:
+        """The concrete false positive MENTIONABLE_NAMESPACES exists to prevent.
+
+        ``cisco:if-index`` is the bare-integer namespace this guard is about:
+        registered, non-unique, digits-normalised, and deliberately absent from
+        ``MENTIONABLE_NAMESPACES``. The document says "VLAN 100"; an interface
+        whose index is 100 must not be linked to it.
+        """
         space = await _space(mdb)
         async with mdb.session() as session:
             asset = Asset(
                 id=uuid.uuid4(),
-                asset_type=AssetType.VM.value,
+                asset_type=AssetType.NETWORK_INTERFACE.value,
                 lifecycle_state=LifecycleState.ACTIVE.value,
-                display_name="vm100",
+                display_name="core3850 Gi1/0/24",
             )
             session.add(asset)
             await session.flush()
@@ -348,7 +356,7 @@ class TestIdentifierMatching:
                 AssetIdentifier(
                     id=uuid.uuid4(),
                     asset_id=asset.id,
-                    namespace="proxmox:vmid",
+                    namespace="cisco:if-index",
                     value_raw="100",
                     value_normalized="100",
                     unique_in_namespace=False,

@@ -17,6 +17,7 @@ from acop.tools.adapters.base import (
     resolve_adapter,
 )
 from acop.tools.adapters.local import LOCAL_ADAPTER, LocalAdapter
+from acop.tools.adapters.proxmox import PROXMOX_ADAPTER, ProxmoxAdapter
 from acop.tools.adapters.simulated import (
     SIM_SLOW,
     SIM_STAYS_DOWN,
@@ -30,6 +31,7 @@ from acop.tools.adapters.simulated import (
 __all__ = [
     "ADAPTER_REGISTRY",
     "LOCAL_ADAPTER",
+    "PROXMOX_ADAPTER",
     "SIMULATED_ADAPTER",
     "SIM_SLOW",
     "SIM_STAYS_DOWN",
@@ -38,6 +40,7 @@ __all__ = [
     "AdapterResult",
     "AdapterServices",
     "LocalAdapter",
+    "ProxmoxAdapter",
     "ResolvedTarget",
     "SimulatedAdapter",
     "ToolAdapter",

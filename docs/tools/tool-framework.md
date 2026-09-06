@@ -12,7 +12,8 @@ Design records: [ADR-0014](../decisions/ADR-0014-code-authoritative-tool-registr
 (one execution path), [ADR-0017](../decisions/ADR-0017-executed-is-not-succeeded.md)
 (`EXECUTED` vs `SUCCEEDED`), [ADR-0018](../decisions/ADR-0018-execution-envelope-and-digest.md)
 (execution envelope), [ADR-0019](../decisions/ADR-0019-separation-of-duties-and-class-3-strength.md)
-(separation of duties). To add a capability, see
+(separation of duties), [ADR-0023](../decisions/ADR-0023-output-contract-violation-fails.md)
+(a declared-output violation fails). To add a capability, see
 [`adding-a-tool.md`](adding-a-tool.md).
 
 ## The one-paragraph summary
@@ -118,7 +119,7 @@ authorization so that the refusal does not vary by who asked — see §4.
 | `VALIDATING` | | An independent observation of the target is in progress |
 | `SUCCEEDED` | ✔ | The intended change was **observed** to be in effect |
 | `VALIDATION_FAILED` | ✔ | It executed and the change could not be confirmed. See `validation_outcome` |
-| `FAILED` | ✔ | The adapter reported failure, or raised. Nothing landed |
+| `FAILED` | ✔ | The adapter reported failure, raised, or returned a result that does not match the tool's declared `output_model`. Nothing usable was produced |
 | `TIMED_OUT` | ✔ | The deadline elapsed. **Never retried** — it may still be in flight |
 | `EXECUTION_INDETERMINATE` | ✔ | A worker was lost mid-execution. **ACOP does not know** whether the change landed |
 | `EXPIRED` | ✔ | An approval window elapsed, or the final gate refused |
@@ -496,6 +497,18 @@ Note the neighbouring case: `VALIDATION_FAILED` with `validation_outcome =
 INDETERMINATE` means the change **did** happen and the confirmation is what is
 missing. That is not reconcilable through this endpoint, because the execution
 outcome was never in doubt.
+
+The other neighbour is `FAILED` with `error_category =
+OUTPUT_CONTRACT_VIOLATION`: the adapter ran and reported success, and its payload
+did not satisfy the tool's declared `output_model`. That is **not** reconcilable
+either, and deliberately so. ACOP knows exactly what happened — the cause is a
+defect in its own adapter or declaration, not an unknown state at the target — so
+it needs a code fix, not a human determination. Recording it as
+`EXECUTION_INDETERMINATE` would manufacture reconciliation work for a question
+nobody has, and dilute the one state reserved for "we genuinely do not know".
+`result_summary` and `result_digest` are left `NULL`, so nothing unvalidated is
+published; the rejected payload's **field names** go to the structured log and its
+values go nowhere. See [ADR-0023](../decisions/ADR-0023-output-contract-violation-fails.md).
 
 ### 8.3 Approving a change
 

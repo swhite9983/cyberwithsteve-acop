@@ -43,6 +43,7 @@ from acop.models.tool import (
     ToolRegistration,
 )
 from acop.models.tool_vocabulary import (
+    AdapterOutcome,
     ApprovalDecision,
     InvocationState,
     PolicyReason,
@@ -82,7 +83,7 @@ from acop.tools.errors import (
     ToolPolicyDeniedError,
 )
 from acop.tools.policy import ToolPolicyEngine
-from acop.tools.registry import ToolRegistryReconciler
+from acop.tools.registry import CODE_REGISTRY, ToolRegistryReconciler
 from tests.conftest import TEST_API_SECRET, TEST_SUBJECT, requires_database
 from tests.integration.conftest import reset_test_database
 
@@ -1732,6 +1733,227 @@ class TestApprovalSweeperLosesTheRace:
             )
         assert await ApprovalSweeper(tdb).expire_stale() == 1
         assert (await _reload(tdb, invocation.id)).state == InvocationState.EXPIRED.value
+
+
+# ---------------------------------------------------------------------------
+# The declared output contract (B-M5-4)
+# ---------------------------------------------------------------------------
+class TestOutputContractViolation:
+    """An adapter that breaks its own declared contract must fail the invocation.
+
+    The old behaviour published ``{}`` and let the state machine carry the row
+    to ``SUCCEEDED``. That is a false statement about an execution written into
+    an append-only table: a reader cannot tell it from a tool that genuinely
+    returned nothing, and a consumer reading ``result_summary`` sees an empty
+    collection rather than a failure. See ADR-0023.
+    """
+
+    @staticmethod
+    def _returning(payload: dict[str, object]) -> Callable[..., Awaitable[object]]:
+        """An adapter that reports SUCCESS and hands back ``payload``.
+
+        SUCCESS is the point. A failing adapter was already handled; what was
+        not handled is an adapter that believes it succeeded and returns
+        something its tool never declared.
+        """
+
+        async def execute(request: AdapterRequest) -> AdapterResult:
+            return AdapterResult(outcome=AdapterOutcome.SUCCESS, payload=dict(payload))
+
+        return execute
+
+    async def _run(
+        self,
+        tdb: Database,
+        settings: Settings,
+        monkeypatch: pytest.MonkeyPatch,
+        payload: dict[str, object],
+    ) -> ToolInvocation:
+        asset_id = await _asset(
+            tdb, display_name="contract-target", asset_type=AssetType.DEVICE
+        )
+        invocations, _, dispatcher = _services(tdb, settings)
+        invocation = await invocations.create(
+            InvocationRequest(
+                tool_name="test.device.status",
+                tool_version="1.0",
+                arguments={"include_facts": False},
+                target_asset_id=asset_id,
+            ),
+            VIEWER,
+        )
+        monkeypatch.setattr(SIMULATED_ADAPTER, "execute", self._returning(payload))
+        state = await dispatcher.execute_once(invocation.id)
+        assert state is InvocationState.FAILED, state
+        return await _reload(tdb, invocation.id)
+
+    async def test_a_malformed_declared_output_fails_the_invocation(
+        self, tdb: Database, settings: Settings, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Test C. The whole correction, end to end against PostgreSQL."""
+        row = await self._run(
+            tdb, settings, monkeypatch, {"this_field_is_not_declared": True}
+        )
+
+        assert row.state == InvocationState.FAILED.value
+        assert row.error_category == ToolErrorCategory.OUTPUT_CONTRACT_VIOLATION.value
+        assert row.error_detail_sanitized == (
+            "The tool returned a result that does not match its declared output."
+        )
+        # Nothing unvalidated was published, and no digest claims otherwise.
+        assert row.result_summary is None
+        assert row.result_digest is None
+        # It failed after execution, so the lease is released like any other
+        # terminal state - the CHECK constraints tie those together.
+        assert row.executor_lease_id is None
+        assert row.lease_expires_at is None
+        assert row.finished_at is not None
+        # It never reached validation, and it never claimed success.
+        assert row.validation_outcome is None
+
+        states = [event.to_state for event in await _events(tdb, row.id)]
+        assert InvocationState.FAILED.value in states
+        assert InvocationState.SUCCEEDED.value not in states
+        assert InvocationState.EXECUTED.value not in states
+        # The final gate still ran and still allowed it: the tool was permitted,
+        # the adapter was simply wrong afterwards.
+        assert row.final_gate_decision == "ALLOW"
+
+    async def test_the_failure_is_audited_as_a_failure(
+        self, tdb: Database, settings: Settings, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``_run_claimed`` audits anything that is not SUCCEEDED as FAILURE.
+
+        Asserted rather than assumed, because the correction relies on that
+        existing branch instead of adding an audit call of its own.
+        """
+        row = await self._run(tdb, settings, monkeypatch, {"undeclared": 1})
+
+        async with tdb.session() as session:
+            rows = await session.execute(
+                text(
+                    "SELECT action, outcome, severity FROM audit_event "
+                    "WHERE resource_id = :rid ORDER BY occurred_at"
+                ),
+                {"rid": str(row.id)},
+            )
+            audited = [
+                (str(action), str(outcome), str(severity))
+                for action, outcome, severity in rows
+            ]
+        # Two records, and the distinction between them is the point. The
+        # request was accepted - that is ``tool.invoke``, and it did succeed.
+        # The execution then failed, which is ``tool.execute``. Collapsing the
+        # two would either hide an accepted request or misreport it.
+        assert ("tool.invoke", "SUCCESS", "INFO") in audited
+        assert ("tool.execute", "FAILURE", "WARNING") in audited
+
+    async def test_a_contract_violation_discloses_no_adapter_output(
+        self, tdb: Database, settings: Settings, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The canary, following the pattern already used for adapter text.
+
+        The payload is rejected precisely because it is undeclared, so it must
+        not survive anywhere - not in the invocation, not in its event history,
+        not in the audit record that describes the failure.
+        """
+        row = await self._run(
+            tdb, settings, monkeypatch, {"connection_string": _LEAKY_MESSAGE}
+        )
+
+        async with tdb.session() as session:
+            for table, column in (
+                ("tool_invocation", "result_summary::text"),
+                ("tool_invocation", "error_detail_sanitized"),
+                ("tool_invocation_event", "detail::text"),
+                ("audit_event", "message"),
+                ("audit_event", "context::text"),
+            ):
+                found = await session.scalar(
+                    text(
+                        f"SELECT count(*) FROM {table} "  # noqa: S608 - fixed literals
+                        f"WHERE {column} ILIKE '%hunter2%'"
+                    )
+                )
+                assert found == 0, f"{table}.{column} leaked adapter text"
+        assert row.result_summary is None
+
+    async def test_a_contract_violation_is_never_retried(
+        self, tdb: Database, settings: Settings, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Test D, proved from the existing machinery rather than new code.
+
+        ``test.device.status`` declares ``max_attempts=2``, so this tool *is*
+        retried for the categories it names. A contract violation is not one of
+        them, and structurally cannot be: the retry loop wraps
+        ``adapter.execute``, and the output model is checked after that loop has
+        already exited. The adapter is therefore called exactly once.
+        """
+        asset_id = await _asset(
+            tdb, display_name="retry-target", asset_type=AssetType.DEVICE
+        )
+        invocations, _, dispatcher = _services(tdb, settings)
+        invocation = await invocations.create(
+            InvocationRequest(
+                tool_name="test.device.status",
+                tool_version="1.0",
+                arguments={"include_facts": False},
+                target_asset_id=asset_id,
+            ),
+            VIEWER,
+        )
+        definition = CODE_REGISTRY[("test.device.status", "1.0")]
+        assert definition.retry_policy.max_attempts == 2, "the tool must be retryable"
+        assert (
+            ToolErrorCategory.OUTPUT_CONTRACT_VIOLATION
+            not in definition.retry_policy.retry_on
+        )
+
+        calls = 0
+
+        async def counting(request: AdapterRequest) -> AdapterResult:
+            nonlocal calls
+            calls += 1
+            return AdapterResult(
+                outcome=AdapterOutcome.SUCCESS, payload={"undeclared": True}
+            )
+
+        monkeypatch.setattr(SIMULATED_ADAPTER, "execute", counting)
+        assert await dispatcher.execute_once(invocation.id) is InvocationState.FAILED
+
+        assert calls == 1, "a contract violation must not be retried"
+        row = await _reload(tdb, invocation.id)
+        assert row.attempt_count == 1
+
+    async def test_a_valid_output_still_succeeds(
+        self, tdb: Database, settings: Settings
+    ) -> None:
+        """Test E. The correction must not cost the ordinary path.
+
+        Deliberately unpatched: the real adapter, the real output model, a real
+        asset. If the new branch could be reached by a well-behaved tool, this
+        is what would catch it.
+        """
+        asset_id = await _asset(
+            tdb, display_name="healthy-target", asset_type=AssetType.DEVICE
+        )
+        invocations, _, dispatcher = _services(tdb, settings)
+        invocation = await invocations.create(
+            InvocationRequest(
+                tool_name="test.device.status",
+                tool_version="1.0",
+                arguments={"include_facts": False},
+                target_asset_id=asset_id,
+            ),
+            VIEWER,
+        )
+        assert await dispatcher.execute_once(invocation.id) is InvocationState.SUCCEEDED
+
+        row = await _reload(tdb, invocation.id)
+        assert row.result_summary is not None
+        assert row.result_summary["display_name"] == "healthy-target"
+        assert row.result_digest is not None
+        assert row.error_category is None
 
 
 # ---------------------------------------------------------------------------

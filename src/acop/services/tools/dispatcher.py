@@ -526,9 +526,27 @@ class ExecutionDispatcher:
             )
             return InvocationState.FAILED
 
-        summary, digest = sanitize_output(
-            definition, self._declared_output(definition, payload)
-        )
+        declared = self._declared_output(definition, payload)
+        if declared is None:
+            # The adapter answered, and what it answered is not what this tool
+            # says it returns. That is not an outcome for the target - it is a
+            # defect in ACOP's own code - so nothing is published and the
+            # invocation fails. Recording SUCCEEDED here with an empty summary
+            # would put a false statement about an execution into an
+            # append-only record; see ADR-0023.
+            category = ToolErrorCategory.OUTPUT_CONTRACT_VIOLATION
+            await release_lease(
+                session,
+                invocation,
+                to_state=InvocationState.FAILED,
+                reason=category.value,
+                finished_at=datetime.now(UTC),
+                error_category=category.value,
+                error_detail_sanitized=ERROR_PHRASES[category],
+            )
+            return InvocationState.FAILED
+
+        summary, digest = sanitize_output(definition, declared)
         await release_lease(
             session,
             invocation,
@@ -543,7 +561,7 @@ class ExecutionDispatcher:
     @staticmethod
     def _declared_output(
         definition: ToolDefinition, payload: dict[str, Any]
-    ) -> dict[str, Any]:
+    ) -> dict[str, Any] | None:
         """Put the adapter's report through the tool's declared output model.
 
         ``mode="json"`` for the same reason
@@ -553,20 +571,42 @@ class ExecutionDispatcher:
         raw ``datetime`` would abort the INSERT.
 
         A payload that does not satisfy the model is a defect in the adapter or
-        the declaration, not a statement about the target. The execution still
-        happened and is still recorded as such - saying otherwise would be a
-        lie about a change that may have landed - but nothing unvalidated is
-        published, because the allow-list exists precisely to stop that.
+        the declaration, not a statement about the target, and the caller turns
+        it into ``FAILED``. ``EXECUTED`` was the earlier answer and it was the
+        wrong one: the row does not stop at ``EXECUTED``, it goes on to
+        ``SUCCEEDED``, and a ``SUCCEEDED`` row whose result is empty claims an
+        outcome nobody observed.
+
+        ``None`` rather than an empty dict, because ``{}`` is a **valid** result
+        for a tool whose output fields are all optional. A sentinel that
+        collides with a legitimate value is not a sentinel, and conflating the
+        two would make a correct tool look broken - or, worse, let a broken one
+        look correct.
+
+        ``None`` rather than an exception, because this method is called from
+        ``_record_adapter_result`` inside ``_run_claimed``: an exception that
+        escaped the caller would leave the invocation in ``EXECUTING`` holding a
+        live lease until the reaper recorded ``EXECUTION_INDETERMINATE`` - an
+        unknown outcome, requiring a human reconciliation, for a failure ACOP
+        knows the exact cause of. A returned value cannot escape.
+
+        Returns:
+            The validated report as JSON-safe primitives, or ``None`` when the
+            payload does not satisfy the declared model.
         """
         try:
             instance = definition.output_model.model_validate(payload)
         except PydanticValidationError:
+            # Field *names* only. The values are the adapter's, which is the
+            # least trustworthy data in the system, and the reason the
+            # declaration exists at all. The names are what an engineer needs
+            # to fix the tool, and a key name is not a credential.
             logger.error(
                 "tools.output.contract_violation",
                 tool=definition.qualified_name,
                 fields=sorted(payload),
             )
-            return {}
+            return None
         return dict(instance.model_dump(mode="json"))
 
     # ------------------------------------------------------------------

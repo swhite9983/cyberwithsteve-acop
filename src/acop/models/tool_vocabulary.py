@@ -308,6 +308,11 @@ class ToolErrorCategory(StrEnum):
     EXECUTION_FAILED = "EXECUTION_FAILED"
     EXECUTION_INDETERMINATE = "EXECUTION_INDETERMINATE"
     VALIDATION_FAILED = "VALIDATION_FAILED"
+    # The adapter answered and the answer failed the tool's own declared
+    # ``output_model``. Distinct from ``INTERNAL_ERROR`` because the
+    # remediation is distinct: fix the adapter's projection or the
+    # declaration, not the policy table and not the target. See ADR-0023.
+    OUTPUT_CONTRACT_VIOLATION = "OUTPUT_CONTRACT_VIOLATION"
     CANCELLED = "CANCELLED"
     INTERNAL_ERROR = "INTERNAL_ERROR"
 
@@ -356,6 +361,9 @@ ERROR_PHRASES: Final[dict[ToolErrorCategory, str]] = {
     ),
     ToolErrorCategory.VALIDATION_FAILED: (
         "The tool executed but the intended change could not be confirmed."
+    ),
+    ToolErrorCategory.OUTPUT_CONTRACT_VIOLATION: (
+        "The tool returned a result that does not match its declared output."
     ),
     ToolErrorCategory.CANCELLED: "The invocation was cancelled.",
     ToolErrorCategory.INTERNAL_ERROR: "An internal error occurred.",

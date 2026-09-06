@@ -34,6 +34,9 @@ class TestPredicateScreening:
             "device.enable_secret",
             "ssh.private_key",
             "auth.credential",
+            "password.community.edition",
+            "token.ssh_key.public",
+            "credential.cert.ssh_key_fingerprint",
         ],
     )
     def test_secret_bearing_predicates_are_rejected(
@@ -51,6 +54,9 @@ class TestPredicateScreening:
             "running_config.sha256",
             "os.version",
             "interface.admin_up",
+            "ssh_key.public",
+            "cert.ssh_key_fingerprint",
+            "community.edition",
         ],
     )
     def test_operational_predicates_are_accepted(

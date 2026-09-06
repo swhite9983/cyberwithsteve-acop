@@ -35,6 +35,54 @@ MAX_TEXT_VALUE_LENGTH = 64_000
 #: Serialised size cap for a JSON value.
 MAX_JSON_VALUE_BYTES = 64_000
 
+#: Predicate components that mean the fact itself carries secret material.
+#: This is intentionally narrower than the defensive mapping-key redactor.
+#: Metadata such as ``cert.ssh_key_fingerprint`` and product names such as
+#: ``community.edition`` are legitimate CMDB facts and must remain storable.
+SENSITIVE_PREDICATE_COMPONENTS: frozenset[str] = frozenset(
+    {
+        "password",
+        "passwd",
+        "secret",
+        "token",
+        "api_key",
+        "apikey",
+        "authorization",
+        "auth_header",
+        "credential",
+        "private_key",
+        "privatekey",
+        "community",
+        "enable_secret",
+        "session_key",
+        "cookie",
+    }
+)
+
+SAFE_PREDICATES: frozenset[str] = frozenset(
+    {
+        "ssh_key.public",
+        "cert.ssh_key_fingerprint",
+        "community.edition",
+    }
+)
+
+
+def _predicate_names_secret(predicate: str) -> bool:
+    """Return whether a CMDB predicate semantically names secret material.
+
+    Predicate screening is deliberately more precise than mapping-key
+    redaction.  The latter must fail conservatively for logs and audit data;
+    CMDB predicates also describe non-secret metadata whose names can contain
+    words such as ``community`` or ``ssh_key``.
+    """
+    lowered = predicate.lower()
+    if lowered in SAFE_PREDICATES:
+        return False
+
+    components = tuple(part for part in lowered.split(".") if part)
+    return any(component in SENSITIVE_PREDICATE_COMPONENTS for component in components)
+
 
 @dataclass(frozen=True, slots=True)
 class ScreenResult:
@@ -87,7 +135,7 @@ class FactValueScreen:
             SecretRejectedError: The predicate names a secret, or a value
                 exceeds its size cap.
         """
-        if is_sensitive_key(predicate):
+        if _predicate_names_secret(predicate):
             raise SecretRejectedError(
                 f"Predicate {predicate!r} names a secret and cannot be stored "
                 "in the CMDB.",

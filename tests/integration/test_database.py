@@ -34,6 +34,7 @@ from tests.conftest import (
     TEST_SUBJECT,
     requires_database,
 )
+from tests.integration.conftest import reset_test_database
 
 pytestmark = [pytest.mark.integration, requires_database]
 
@@ -43,7 +44,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 def _alembic_config(settings: Settings) -> Config:
     config = Config(str(REPO_ROOT / "alembic.ini"))
     config.set_main_option("script_location", str(REPO_ROOT / "migrations"))
-    config.set_main_option("sqlalchemy.url", settings.database_url)
+    config.set_main_option("sqlalchemy.url", settings.alembic_database_url)
     return config
 
 
@@ -52,9 +53,7 @@ async def migrated_database(settings: Settings):
     """Apply migrations to a clean schema, then tear it down."""
     database = Database(settings)
 
-    async with database.engine.begin() as connection:
-        await connection.execute(text("DROP SCHEMA public CASCADE"))
-        await connection.execute(text("CREATE SCHEMA public"))
+    await reset_test_database(settings)
 
     config = _alembic_config(settings)
     # Alembic's env.py runs its own asyncio.run(), so it cannot be called from
@@ -80,10 +79,10 @@ class TestMigrations:
         assert "audit_event" in tables
         assert "alembic_version" in tables
 
-    async def test_milestone_3_creates_exactly_the_expected_tables(
+    async def test_milestone_4_creates_exactly_the_expected_tables(
         self, migrated_database
     ) -> None:
-        """Scope guard: no speculative Milestone 4+ tables.
+        """Scope guard: no speculative Milestone 5+ tables.
 
         Widened deliberately at each milestone. Embedding-space *partitions*
         are excluded because they are created at runtime by space
@@ -122,6 +121,12 @@ class TestMigrations:
             "knowledge_asset_mention",
             "embedding_space",
             "knowledge_embedding_d768",
+            # Milestone 4
+            "tool_registration",
+            "tool_invocation",
+            "tool_approval",
+            "tool_invocation_event",
+            "tool_invocation_reconciliation",
         }
 
     async def test_timestamps_are_timezone_aware(self, migrated_database) -> None:

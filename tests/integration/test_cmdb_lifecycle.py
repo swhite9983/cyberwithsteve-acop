@@ -62,6 +62,7 @@ from tests.conftest import (
     MEM_24,
     requires_database,
 )
+from tests.integration.conftest import reset_test_database
 
 pytestmark = [pytest.mark.integration, requires_database]
 
@@ -73,16 +74,14 @@ PROXMOX = "proxmox:pve-doc-01"
 def _alembic_config(settings: Settings) -> Config:
     config = Config(str(REPO_ROOT / "alembic.ini"))
     config.set_main_option("script_location", str(REPO_ROOT / "migrations"))
-    config.set_main_option("sqlalchemy.url", settings.database_url)
+    config.set_main_option("sqlalchemy.url", settings.alembic_database_url)
     return config
 
 
 @pytest.fixture
 async def db(settings: Settings):
     database = Database(settings)
-    async with database.engine.begin() as connection:
-        await connection.execute(text("DROP SCHEMA public CASCADE"))
-        await connection.execute(text("CREATE SCHEMA public"))
+    await reset_test_database(settings)
     await asyncio.to_thread(command.upgrade, _alembic_config(settings), "head")
     try:
         yield database

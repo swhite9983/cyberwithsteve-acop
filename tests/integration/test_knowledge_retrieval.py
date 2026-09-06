@@ -1,6 +1,6 @@
 """Dense retrieval, the exact fallback, and the two ways it can be wrong.
 
-The centrepiece is the adversarial corpus from R3 §1: thousands of CONFIDENTIAL
+The centrepiece is the adversarial corpus from R3 Â§1: thousands of CONFIDENTIAL
 chunks clustered tightly around the query, and a single PUBLIC chunk further
 away. An operator asking that query gets nothing from the ANN alone, no matter
 how generous the over-fetch. It is run twice - once with the fallback enabled
@@ -55,6 +55,7 @@ from acop.services.knowledge.retrieval import (
 )
 from acop.services.knowledge.spaces import EmbeddingSpaceService, SpaceRegistration
 from tests.conftest import requires_database
+from tests.integration.conftest import reset_test_database
 
 pytestmark = [pytest.mark.integration, requires_database]
 
@@ -94,12 +95,10 @@ NOBODY = Principal(
 @pytest.fixture
 async def rdb(settings: Settings) -> AsyncIterator[Database]:
     database = Database(settings)
-    async with database.engine.begin() as connection:
-        await connection.execute(text("DROP SCHEMA public CASCADE"))
-        await connection.execute(text("CREATE SCHEMA public"))
+    await reset_test_database(settings)
     config = Config(str(REPO_ROOT / "alembic.ini"))
     config.set_main_option("script_location", str(REPO_ROOT / "migrations"))
-    config.set_main_option("sqlalchemy.url", settings.database_url)
+    config.set_main_option("sqlalchemy.url", settings.alembic_database_url)
     await asyncio.to_thread(command.upgrade, config, "head")
     try:
         yield database
@@ -519,7 +518,7 @@ class TestDenseRetrieval:
 
 
 # ---------------------------------------------------------------------------
-# The adversarial corpus - R3 §1
+# The adversarial corpus - R3 Â§1
 # ---------------------------------------------------------------------------
 
 

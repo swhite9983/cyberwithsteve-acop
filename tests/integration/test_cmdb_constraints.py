@@ -23,6 +23,7 @@ from sqlalchemy.exc import IntegrityError
 from acop.config import Settings
 from acop.db import Database
 from tests.conftest import DOC_MAC, DOC_SERIAL, MEM_12, MEM_16, requires_database
+from tests.integration.conftest import reset_test_database
 
 pytestmark = [pytest.mark.integration, requires_database]
 
@@ -44,7 +45,7 @@ def at(hour: int, minute: int = 0) -> datetime:
 def _alembic_config(settings: Settings) -> Config:
     config = Config(str(REPO_ROOT / "alembic.ini"))
     config.set_main_option("script_location", str(REPO_ROOT / "migrations"))
-    config.set_main_option("sqlalchemy.url", settings.database_url)
+    config.set_main_option("sqlalchemy.url", settings.alembic_database_url)
     return config
 
 
@@ -52,9 +53,7 @@ def _alembic_config(settings: Settings) -> Config:
 async def db(settings: Settings):
     """A migrated database with two assets, for raw-SQL constraint probing."""
     database = Database(settings)
-    async with database.engine.begin() as connection:
-        await connection.execute(text("DROP SCHEMA public CASCADE"))
-        await connection.execute(text("CREATE SCHEMA public"))
+    await reset_test_database(settings)
     await asyncio.to_thread(command.upgrade, _alembic_config(settings), "head")
 
     async with database.session() as session:

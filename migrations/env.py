@@ -69,7 +69,7 @@ def _database_url() -> str:
 
 
 database_url = _database_url()
-config.set_main_option("sqlalchemy.url", database_url)
+config.set_main_option("sqlalchemy.url", database_url.replace("%", "%%"))
 
 
 def _configure(connection: Connection) -> None:

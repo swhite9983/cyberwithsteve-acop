@@ -114,9 +114,17 @@ verify-cmdb: ## Full Milestone 2 CMDB acceptance check (needs operator + approve
 verify-knowledge: ## Full Milestone 3 knowledge/RAG acceptance check (needs operator + approver + admin keys)
 	$(VENV_PYTHON) scripts/verify_milestone3.py
 
+.PHONY: verify-tools
+verify-tools: ## Full Milestone 4 tool-framework acceptance check (starts its own server)
+	$(VENV_PYTHON) scripts/verify_milestone4.py
+
+.PHONY: verify-tools-slow
+verify-tools-slow: ## Milestone 4 acceptance check including the ~35s timeout path
+	$(VENV_PYTHON) scripts/verify_milestone4.py --include-slow
+
 .PHONY: probe-embedding-prefixes
 probe-embedding-prefixes: ## Observe the embedding provider's prompt-prefix behaviour (run before first ingest)
 	$(VENV_PYTHON) scripts/probe_embedding_prefixes.py
 
 .PHONY: verify-all
-verify-all: verify verify-cmdb verify-knowledge ## Run every milestone acceptance check in order
+verify-all: verify verify-cmdb verify-knowledge verify-tools ## Run every milestone acceptance check in order

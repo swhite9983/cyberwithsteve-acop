@@ -49,6 +49,7 @@ from acop.services.knowledge.mentions import AssetMentionService, candidates
 from acop.services.knowledge.screening import DocumentScreen
 from acop.services.knowledge.spaces import EmbeddingSpaceService, SpaceRegistration
 from tests.conftest import requires_database
+from tests.integration.conftest import reset_test_database
 
 pytestmark = [pytest.mark.integration, requires_database]
 
@@ -79,12 +80,10 @@ VLAN 100 is the management VLAN. Trunk ports carry VLAN 100 and VLAN 200.
 @pytest.fixture
 async def mdb(settings: Settings) -> AsyncIterator[Database]:
     database = Database(settings)
-    async with database.engine.begin() as connection:
-        await connection.execute(text("DROP SCHEMA public CASCADE"))
-        await connection.execute(text("CREATE SCHEMA public"))
+    await reset_test_database(settings)
     config = Config(str(REPO_ROOT / "alembic.ini"))
     config.set_main_option("script_location", str(REPO_ROOT / "migrations"))
-    config.set_main_option("sqlalchemy.url", settings.database_url)
+    config.set_main_option("sqlalchemy.url", settings.alembic_database_url)
     await asyncio.to_thread(command.upgrade, config, "head")
     try:
         yield database

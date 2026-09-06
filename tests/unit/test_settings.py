@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 from pydantic import ValidationError
+from sqlalchemy.engine import make_url
 
 from acop.config import ApiKeyPrincipalConfig, Environment, Settings
 
@@ -31,6 +32,61 @@ class TestDatabaseUrl:
         assert settings.database_url == (
             "postgresql+asyncpg://acop:s3cret@db.lab:5433/acopdb"
         )
+
+    def test_reserved_characters_in_password_round_trip_through_async_url(self) -> None:
+        password = "p@ss:word/%?#[]!"
+        settings = _settings(
+            postgres_host="db.lab",
+            postgres_port=5433,
+            postgres_user="acop",
+            postgres_password=password,
+            postgres_db="acopdb",
+        )
+
+        parsed = make_url(settings.database_url)
+
+        assert parsed.drivername == "postgresql+asyncpg"
+        assert parsed.username == "acop"
+        assert parsed.password == password
+        assert parsed.host == "db.lab"
+        assert parsed.port == 5433
+        assert parsed.database == "acopdb"
+
+    def test_reserved_characters_in_password_round_trip_through_sync_url(self) -> None:
+        password = "p@ss:word/%?#[]!"
+        settings = _settings(
+            postgres_host="db.lab",
+            postgres_port=5433,
+            postgres_user="acop",
+            postgres_password=password,
+            postgres_db="acopdb",
+        )
+
+        parsed = make_url(settings.sync_database_url)
+
+        assert parsed.drivername == "postgresql+psycopg"
+        assert parsed.username == "acop"
+        assert parsed.password == password
+        assert parsed.host == "db.lab"
+        assert parsed.port == 5433
+        assert parsed.database == "acopdb"
+
+    def test_alembic_url_survives_configparser_interpolation(self) -> None:
+        from alembic.config import Config
+
+        password = "p@ss:word/%?#[]!"
+        settings = _settings(postgres_password=password)
+
+        assert "%%" in settings.alembic_database_url
+
+        config = Config()
+        config.set_main_option("sqlalchemy.url", settings.alembic_database_url)
+
+        decoded = config.get_main_option("sqlalchemy.url")
+        parsed = make_url(decoded)
+
+        assert parsed.password == password
+        assert decoded == settings.database_url
 
     def test_safe_target_excludes_credentials(self) -> None:
         settings = _settings(postgres_password="s3cret", postgres_host="db.lab")

@@ -40,6 +40,12 @@ from acop.services.knowledge import (
     OllamaEmbeddingProvider,
     RetrievalConfig,
 )
+from acop.services.tools import (
+    ExecutionDispatcher,
+    ReconciliationService,
+    ToolApprovalService,
+    ToolInvocationService,
+)
 
 
 def get_settings_dep(request: Request) -> Settings:
@@ -193,6 +199,7 @@ OperatorPrincipal = Annotated[
 ApproverPrincipal = Annotated[
     Principal, Depends(require_roles(Role.APPROVER, Role.ADMIN))
 ]
+AdminPrincipal = Annotated[Principal, Depends(require_roles(Role.ADMIN))]
 
 
 # ---------------------------------------------------------------------------
@@ -314,7 +321,36 @@ def get_asset_mention_service(
     return AssetMentionService(session)
 
 
+# ---------------------------------------------------------------------------
+# Tool framework (Milestone 4)
+# ---------------------------------------------------------------------------
+# All four take the *engine*, not a request session: every one of them writes
+# on its own transaction so that a refusal survives the request's rollback and
+# so the dispatcher sees a new invocation the instant it exists. The dispatcher
+# itself is created once at startup and read from app.state, because it holds
+# the adapter service handles.
+
+
+def get_tool_invocation_service(
+    request: Request,
+) -> ToolInvocationService:
+    return ToolInvocationService(get_database(request), get_settings_dep(request))
+
+
+def get_tool_approval_service(request: Request) -> ToolApprovalService:
+    return ToolApprovalService(get_database(request), get_settings_dep(request))
+
+
+def get_reconciliation_service(request: Request) -> ReconciliationService:
+    return ReconciliationService(get_database(request))
+
+
+def get_dispatcher(request: Request) -> ExecutionDispatcher:
+    return cast(ExecutionDispatcher, request.app.state.tool_dispatcher)
+
+
 __all__ = [
+    "AdminPrincipal",
     "ApproverPrincipal",
     "AuthenticationError",
     "CurrentPrincipal",
@@ -325,6 +361,7 @@ __all__ = [
     "get_audit_service",
     "get_authenticator",
     "get_database",
+    "get_dispatcher",
     "get_document_screen",
     "get_embedding_provider",
     "get_embedding_space_service",
@@ -336,9 +373,12 @@ __all__ = [
     "get_knowledge_retrieval_service",
     "get_ollama",
     "get_principal",
+    "get_reconciliation_service",
     "get_relationship_service",
     "get_retrieval_config",
     "get_session",
     "get_settings_dep",
+    "get_tool_approval_service",
+    "get_tool_invocation_service",
     "require_roles",
 ]

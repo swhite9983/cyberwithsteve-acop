@@ -79,14 +79,16 @@ def _verifier() -> ModuleType:
 
 
 class TestMilestoneScope:
-    async def test_only_milestone_3_endpoints_are_exposed(
+    async def test_only_milestone_4_endpoints_are_exposed(
         self, client: httpx.AsyncClient
     ) -> None:
         """Guard against scope creep.
 
-        Milestones 1-3 expose health, identity, the CMDB and knowledge. Nothing
-        that reads or changes infrastructure exists yet, and this test fails if
-        an endpoint appears without the milestone that justifies it.
+        Milestones 1-4 expose health, identity, the CMDB, knowledge and the
+        tool framework. This test fails if an endpoint appears without the
+        milestone that justifies it - which is exactly what it did when
+        Milestone 4 added its sixteen, and the list below is the deliberate
+        update rather than a silent one.
         """
         schema = (await client.get("/openapi.json")).json()
         assert set(schema["paths"]) == {
@@ -129,6 +131,23 @@ class TestMilestoneScope:
             "/knowledge/sources/{source_id}/retire",
             "/knowledge/versions/{version_id}/chunks",
             "/knowledge/versions/{version_id}/mentions/scan",
+            # Milestone 4. Sixteen operations across these paths; there is no
+            # /execute, no /run and no /command among them.
+            "/tools",
+            "/tools/{tool_name}",
+            "/tools/{tool_name}/disable",
+            "/tools/{tool_name}/enable",
+            "/tools/{tool_name}/versions",
+            "/tool-invocations",
+            "/tool-invocations/{invocation_id}",
+            "/tool-invocations/{invocation_id}/approvals",
+            "/tool-invocations/{invocation_id}/approve",
+            "/tool-invocations/{invocation_id}/cancel",
+            "/tool-invocations/{invocation_id}/deny",
+            "/tool-invocations/{invocation_id}/envelope",
+            "/tool-invocations/{invocation_id}/events",
+            "/tool-invocations/{invocation_id}/reconcile",
+            "/tool-invocations/{invocation_id}/result",
         }
 
     async def test_verifier_required_route_contract_matches_the_api(
@@ -186,13 +205,28 @@ class TestMilestoneScope:
             assert "verification_status" not in model.get("properties", {}), name
             assert "statement_class" not in model.get("properties", {}), name
 
-    async def test_no_tool_execution_surface_exists(
+    async def test_no_generic_execution_surface_exists(
         self, client: httpx.AsyncClient
     ) -> None:
+        """Milestone 4 added tools; it did not add a way to run anything.
+
+        Before Milestone 4 this test forbade the word "tool" in a path, which
+        was the right assertion while nothing could execute. Now that something
+        can, the assertion that matters is narrower and stronger: there is one
+        entry point, and no path anywhere offers generic execution, a shell, a
+        remediation trigger or a discovery sweep.
+        """
         schema = (await client.get("/openapi.json")).json()
-        forbidden = ("tool", "execute", "command", "ssh", "remediat", "discover")
+        forbidden = ("execute", "command", "ssh", "shell", "remediat", "discover")
         for path in schema["paths"]:
             assert not any(word in path.lower() for word in forbidden), path
+        # And exactly one endpoint causes anything to happen at all.
+        entry_points = {
+            path
+            for path, operations in schema["paths"].items()
+            if "post" in operations and path == "/tool-invocations"
+        }
+        assert entry_points == {"/tool-invocations"}
 
 
 class TestValidKeyReachesTheDatabase:

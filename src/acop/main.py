@@ -21,10 +21,19 @@ from acop.api.router import api_router
 from acop.auth import ANONYMOUS_PRINCIPAL, ApiKeyBackend, Authenticator
 from acop.config import Settings, get_settings
 from acop.core.correlation import REQUEST_ID_HEADER, get_request_id
-from acop.core.exceptions import AcopError
+from acop.core.exceptions import AcopError, ConfigurationError
 from acop.core.logging import configure_logging, get_logger
 from acop.db import Database
 from acop.services import HealthService
+from acop.services.tools.dispatcher import ExecutionDispatcher
+from acop.services.tools.worker import ToolWorker
+from acop.tools.adapters.base import AdapterServices
+from acop.tools.registry import ToolRegistryReconciler
+
+# Importing the catalog is what registers every capability and runs the
+# fourteen import-time rules. It is imported here, at the application module,
+# so a declaration that violates one fails the process at startup.
+import acop.tools.catalog  # noqa: F401  # isort:skip
 
 logger = get_logger(__name__)
 
@@ -83,6 +92,49 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             settings, app.state.database, app.state.ollama
         )
 
+        # Milestone 4. Importing the catalog runs all fourteen import-time
+        # rules; a bad declaration fails startup here rather than a request
+        # later. The adapter service handles are ACOP's own resources - a
+        # database handle, settings, and the health service - never anything
+        # derived from a caller.
+        app.state.tool_dispatcher = ExecutionDispatcher(
+            app.state.database,
+            settings,
+            services=AdapterServices(
+                database=app.state.database,
+                settings=settings,
+                health=app.state.health_service,
+            ),
+        )
+        app.state.tool_worker = ToolWorker(
+            app.state.database, settings, app.state.tool_dispatcher
+        )
+        # Reconciliation writes code -> database and never reads a definition
+        # back. A contract that changed without a version bump raises here, and
+        # that is deliberate: approvals already given were bound to envelopes
+        # computed under the previous contract.
+        try:
+            async with app.state.database.session() as session:
+                report = await ToolRegistryReconciler(session).reconcile()
+            logger.info(
+                "tools.registry.startup",
+                registered=len(report.registered),
+                unchanged=len(report.unchanged),
+                retired=len(report.retired),
+            )
+            await app.state.tool_worker.start()
+        except ConfigurationError:
+            # A contract-drift refusal must stop the process: continuing would
+            # serve a tool whose queued approvals no longer describe it.
+            raise
+        except Exception:
+            # An unreachable database at startup is the one case the service
+            # survives, for the same reason the rest of startup does - a
+            # crash-looping container is harder to diagnose than a running one
+            # whose /health names the problem. No tool can execute until
+            # reconciliation succeeds, because no registration row exists.
+            logger.exception("tools.registry.startup_failed")
+
         logger.info(
             "acop.startup",
             version=__version__,
@@ -111,6 +163,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         try:
             yield
         finally:
+            await app.state.tool_worker.stop()
             await app.state.ollama.aclose()
             await app.state.database.dispose()
             logger.info("acop.shutdown")

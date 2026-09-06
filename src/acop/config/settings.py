@@ -25,6 +25,7 @@ from pydantic import (
     field_validator,
 )
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from sqlalchemy.engine import URL
 
 
 class Environment(StrEnum):
@@ -190,6 +191,38 @@ class Settings(BaseSettings):
     scrape interval cannot turn the health endpoint into a load generator."""
 
     # ------------------------------------------------------------------
+    # Tool framework (Milestone 4)
+    # ------------------------------------------------------------------
+    tools_allow_self_approval: bool = False
+    """Whether a requester may approve their own invocation.
+
+    **Never caller-controlled.** The approval API has no field for it: the
+    value is derived server-side from this setting, the tool's own policy, and
+    whether the approver's subject equals the requester's. A validator below
+    refuses to start production with it enabled, and the database CHECK
+    ``approver_subject <> requester_subject OR self_approval IS TRUE`` is the
+    third layer behind both.
+
+    It exists at all so a single-operator development environment can exercise
+    the approval path end to end without two identities."""
+
+    tools_dispatcher_enabled: bool = True
+    """Whether the background dispatcher polls for READY invocations."""
+
+    tools_dispatcher_poll_seconds: float = 1.0
+    tools_execution_lease_seconds: float = 120.0
+    """How long a worker's claim on an invocation is honoured before the reaper
+    treats it as lost. Must exceed the longest declared tool timeout, or a slow
+    tool would be reaped while it is still running."""
+
+    tools_reaper_interval_seconds: float = 30.0
+    tools_inline_wait_seconds: float = 30.0
+    """How long a Class 0/1 request waits for the shared execution path to
+    finish before returning 202 and letting the caller poll. The request is
+    waiting on the *same* dispatcher a background worker would use; it never
+    bypasses it."""
+
+    # ------------------------------------------------------------------
     # Authentication (Milestone 1: static API keys)
     # ------------------------------------------------------------------
     auth_enabled: bool = True
@@ -272,6 +305,27 @@ class Settings(BaseSettings):
             )
         return value
 
+    @field_validator("tools_allow_self_approval")
+    @classmethod
+    def _no_self_approval_in_production(cls, value: bool, info: ValidationInfo) -> bool:
+        """Refuse to start production with self-approval enabled.
+
+        Separation of duties is the entire control that makes a Class 2 or
+        Class 3 approval mean anything. A deployment that quietly enabled this
+        would keep producing approval records that look identical to real ones,
+        so the failure has to be at startup rather than at approval time.
+        """
+        if value and info.data.get("environment") in (
+            Environment.STAGING,
+            Environment.PRODUCTION,
+        ):
+            raise ValueError(
+                "ACOP_TOOLS_ALLOW_SELF_APPROVAL must be false outside "
+                "development. Separation of duties is not optional in a "
+                "deployed environment."
+            )
+        return value
+
     @field_validator("debug")
     @classmethod
     def _no_debug_in_production(cls, value: bool, info: ValidationInfo) -> bool:
@@ -285,20 +339,31 @@ class Settings(BaseSettings):
     @property
     def database_url(self) -> str:
         """Async SQLAlchemy URL used by the application."""
-        return (
-            f"postgresql+asyncpg://{self.postgres_user}:"
-            f"{self.postgres_password.get_secret_value()}@"
-            f"{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
-        )
+        return URL.create(
+            "postgresql+asyncpg",
+            username=self.postgres_user,
+            password=self.postgres_password.get_secret_value(),
+            host=self.postgres_host,
+            port=self.postgres_port,
+            database=self.postgres_db,
+        ).render_as_string(hide_password=False)
 
     @property
     def sync_database_url(self) -> str:
         """Synchronous URL. Used only by tooling that cannot run async."""
-        return (
-            f"postgresql+psycopg://{self.postgres_user}:"
-            f"{self.postgres_password.get_secret_value()}@"
-            f"{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
-        )
+        return URL.create(
+            "postgresql+psycopg",
+            username=self.postgres_user,
+            password=self.postgres_password.get_secret_value(),
+            host=self.postgres_host,
+            port=self.postgres_port,
+            database=self.postgres_db,
+        ).render_as_string(hide_password=False)
+
+    @property
+    def alembic_database_url(self) -> str:
+        """Database URL escaped for Alembic ConfigParser interpolation."""
+        return self.database_url.replace("%", "%%")
 
     @property
     def safe_database_target(self) -> str:

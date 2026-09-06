@@ -27,7 +27,7 @@ import pytest
 import uvicorn
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import func, select, text
+from sqlalchemy import func, select
 
 from acop.api.deps import get_embedding_provider
 from acop.config import ApiKeyPrincipalConfig, Settings
@@ -41,6 +41,7 @@ from acop.models.knowledge import (
 )
 from acop.services.knowledge.embedding_provider import DeterministicEmbeddingProvider
 from tests.conftest import requires_database
+from tests.integration.conftest import reset_test_database
 
 pytestmark = [pytest.mark.integration, requires_database]
 
@@ -106,12 +107,10 @@ def api_settings(make_settings) -> Settings:
 @pytest.fixture
 async def live(api_settings: Settings) -> AsyncIterator[httpx.AsyncClient]:
     database = Database(api_settings)
-    async with database.engine.begin() as connection:
-        await connection.execute(text("DROP SCHEMA public CASCADE"))
-        await connection.execute(text("CREATE SCHEMA public"))
+    await reset_test_database(api_settings)
     config = Config(str(REPO_ROOT / "alembic.ini"))
     config.set_main_option("script_location", str(REPO_ROOT / "migrations"))
-    config.set_main_option("sqlalchemy.url", api_settings.database_url)
+    config.set_main_option("sqlalchemy.url", api_settings.alembic_database_url)
     await asyncio.to_thread(command.upgrade, config, "head")
     await database.dispose()
 

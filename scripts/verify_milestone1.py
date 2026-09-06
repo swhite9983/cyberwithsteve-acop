@@ -232,18 +232,32 @@ async def verify(base_url: str, api_key: str | None) -> int:
             # per-milestone required-route sets in verify_milestone2.py and
             # verify_milestone3.py, pinned by unit tests, are what actually
             # enforce each API surface.
-            accepted_prefixes = ("/health", "/whoami", "/cmdb", "/knowledge")
+            accepted_prefixes = (
+                "/health",
+                "/whoami",
+                "/cmdb",
+                "/knowledge",
+                # Milestone 4. Widened deliberately: the framework's sixteen
+                # operations are justified, and verify_milestone4.py pins the
+                # exact set in both directions.
+                "/tools",
+                "/tool-invocations",
+            )
             later = [path for path in paths if not path.startswith(accepted_prefixes)]
             if later:
                 check.warn(
-                    "Endpoints outside Milestones 1-3 are exposed, which no "
+                    "Endpoints outside Milestones 1-4 are exposed, which no "
                     f"accepted milestone justifies: {later}"
                 )
             else:
+                # Milestone 4 makes something executable for the first time, so
+                # the honest claim is narrower than it was: there is no generic
+                # execution surface, not that nothing can execute at all.
                 check.ok(
                     "No endpoints beyond the accepted milestones. No "
-                    "infrastructure integration and no action-executing "
-                    "capability is present."
+                    "infrastructure integration is present, and the only way "
+                    "to execute anything is the Milestone 4 tool framework, "
+                    "which exposes no generic command surface."
                 )
         else:
             check.warn("OpenAPI schema is disabled (ACOP_DOCS_ENABLED=false).")

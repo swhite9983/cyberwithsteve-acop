@@ -32,7 +32,7 @@ import pytest
 import uvicorn
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import func, select, text
+from sqlalchemy import func, select
 
 from acop.config import ApiKeyPrincipalConfig, Settings
 from acop.db import Database
@@ -41,6 +41,7 @@ from acop.models.asset import Asset
 from acop.models.audit import AuditEvent
 from acop.models.fact import AssetFact, FactAttestation
 from tests.conftest import MEM_16, MEM_24, requires_database
+from tests.integration.conftest import reset_test_database
 
 pytestmark = [pytest.mark.integration, requires_database]
 
@@ -76,12 +77,10 @@ def tx_settings(make_settings) -> Settings:
 async def live_api(tx_settings: Settings) -> AsyncIterator[httpx.AsyncClient]:
     """A real uvicorn server on a real port, against a freshly migrated schema."""
     database = Database(tx_settings)
-    async with database.engine.begin() as connection:
-        await connection.execute(text("DROP SCHEMA public CASCADE"))
-        await connection.execute(text("CREATE SCHEMA public"))
+    await reset_test_database(tx_settings)
     config = Config(str(REPO_ROOT / "alembic.ini"))
     config.set_main_option("script_location", str(REPO_ROOT / "migrations"))
-    config.set_main_option("sqlalchemy.url", tx_settings.database_url)
+    config.set_main_option("sqlalchemy.url", tx_settings.alembic_database_url)
     await asyncio.to_thread(command.upgrade, config, "head")
     await database.dispose()
 

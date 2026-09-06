@@ -22,7 +22,6 @@ from pathlib import Path
 import pytest
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import text
 
 from acop.auth import AuthMethod, Principal, PrincipalType
 from acop.config import Settings
@@ -47,6 +46,7 @@ from acop.services.knowledge.retrieval import (
 from acop.services.knowledge.screening import DocumentScreen
 from acop.services.knowledge.spaces import EmbeddingSpaceService, SpaceRegistration
 from tests.conftest import requires_database
+from tests.integration.conftest import reset_test_database
 
 pytestmark = [pytest.mark.integration, requires_database]
 
@@ -103,12 +103,10 @@ quarterly cycle by the facilities team.
 @pytest.fixture
 async def hdb(settings: Settings) -> AsyncIterator[Database]:
     database = Database(settings)
-    async with database.engine.begin() as connection:
-        await connection.execute(text("DROP SCHEMA public CASCADE"))
-        await connection.execute(text("CREATE SCHEMA public"))
+    await reset_test_database(settings)
     config = Config(str(REPO_ROOT / "alembic.ini"))
     config.set_main_option("script_location", str(REPO_ROOT / "migrations"))
-    config.set_main_option("sqlalchemy.url", settings.database_url)
+    config.set_main_option("sqlalchemy.url", settings.alembic_database_url)
     await asyncio.to_thread(command.upgrade, config, "head")
     try:
         yield database

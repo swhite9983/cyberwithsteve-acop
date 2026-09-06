@@ -1,6 +1,6 @@
 """Ingestion, screening, quarantine and idempotence, against real PostgreSQL.
 
-The central property proved here is the R3 §2 correction: a rejected or
+The central property proved here is the R3 Â§2 correction: a rejected or
 quarantined submission creates **no canonical row**. Before that correction a
 quarantined ingest wrote a ``knowledge_document_version`` with no content, and
 a later false-positive override would have had to either mutate that immutable
@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import func, select, text
+from sqlalchemy import func, select
 
 from acop.auth import AuthMethod, Principal, PrincipalType
 from acop.config import Settings
@@ -50,6 +50,7 @@ from acop.services.knowledge.ingest import (
 from acop.services.knowledge.screening import DocumentScreen
 from acop.services.knowledge.spaces import EmbeddingSpaceService, SpaceRegistration
 from tests.conftest import requires_database
+from tests.integration.conftest import reset_test_database
 
 pytestmark = [pytest.mark.integration, requires_database]
 
@@ -95,12 +96,10 @@ If %SPANTREE-2-BLOCK_BPDUGUARD appears, check portfast on Gi1/0/24.
 @pytest.fixture
 async def kdb(settings: Settings) -> AsyncIterator[Database]:
     database = Database(settings)
-    async with database.engine.begin() as connection:
-        await connection.execute(text("DROP SCHEMA public CASCADE"))
-        await connection.execute(text("CREATE SCHEMA public"))
+    await reset_test_database(settings)
     config = Config(str(REPO_ROOT / "alembic.ini"))
     config.set_main_option("script_location", str(REPO_ROOT / "migrations"))
-    config.set_main_option("sqlalchemy.url", settings.database_url)
+    config.set_main_option("sqlalchemy.url", settings.alembic_database_url)
     await asyncio.to_thread(command.upgrade, config, "head")
     try:
         yield database
@@ -247,7 +246,7 @@ class TestIdempotence:
         space = await _make_space(kdb)
         source_id = await _make_source(kdb)
         await _ingest(kdb, space, source_id, RUNBOOK)
-        crlf = "﻿" + RUNBOOK.replace("\n", "\r\n")
+        crlf = "\ufeff" + RUNBOOK.replace("\n", "\r\n")
 
         result = await _ingest(kdb, space, source_id, crlf)
 
@@ -313,7 +312,7 @@ class TestIdempotence:
 
 
 class TestQuarantine:
-    """The R3 §2 correction, proved."""
+    """The R3 Â§2 correction, proved."""
 
     async def test_secret_creates_no_canonical_row_at_all(self, kdb: Database) -> None:
         space = await _make_space(kdb)

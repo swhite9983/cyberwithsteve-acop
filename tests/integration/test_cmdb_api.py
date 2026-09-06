@@ -15,13 +15,14 @@ import httpx
 import pytest
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import func, select, text
+from sqlalchemy import func, select
 
 from acop.config import ApiKeyPrincipalConfig, Settings
 from acop.db import Database
 from acop.main import create_app
 from acop.models.audit import AuditEvent
 from tests.conftest import DOC_SERIAL, MEM_12, MEM_16, requires_database
+from tests.integration.conftest import reset_test_database
 
 pytestmark = [pytest.mark.integration, requires_database]
 
@@ -56,12 +57,10 @@ def api_settings(make_settings) -> Settings:
 @pytest.fixture
 async def api(api_settings: Settings) -> AsyncIterator[httpx.AsyncClient]:
     database = Database(api_settings)
-    async with database.engine.begin() as connection:
-        await connection.execute(text("DROP SCHEMA public CASCADE"))
-        await connection.execute(text("CREATE SCHEMA public"))
+    await reset_test_database(api_settings)
     config = Config(str(REPO_ROOT / "alembic.ini"))
     config.set_main_option("script_location", str(REPO_ROOT / "migrations"))
-    config.set_main_option("sqlalchemy.url", api_settings.database_url)
+    config.set_main_option("sqlalchemy.url", api_settings.alembic_database_url)
     await asyncio.to_thread(command.upgrade, config, "head")
     await database.dispose()
 
@@ -456,13 +455,31 @@ class TestAuditCoverage:
 
 
 class TestScopeOverHttp:
-    async def test_no_infrastructure_endpoint_exists(
+    async def test_no_generic_execution_surface_exists(
         self, api: httpx.AsyncClient
     ) -> None:
+        """Milestone 4 added tools; it did not add a way to run anything.
+
+        Before Milestone 4 this test forbade the word "tool" in any path, which
+        was the right assertion while nothing could execute. Now that something
+        can, that wording would only forbid the *name* of what the milestone
+        legitimately added - ``/tools`` and ``/tool-invocations`` - while saying
+        nothing about what those endpoints permit.
+
+        The narrower assertion is the stronger one now: no path anywhere offers
+        generic execution, a shell, a remediation trigger or a discovery sweep,
+        and exactly one endpoint causes anything to happen at all.
+        """
         schema = (await api.get("/openapi.json")).json()
-        forbidden = ("tool", "execute", "command", "ssh", "remediat", "discover")
+        forbidden = ("execute", "command", "ssh", "shell", "remediat", "discover")
         for path in schema["paths"]:
             assert not any(word in path.lower() for word in forbidden), path
+        entry_points = {
+            path
+            for path, operations in schema["paths"].items()
+            if "post" in operations and path == "/tool-invocations"
+        }
+        assert entry_points == {"/tool-invocations"}
 
     async def test_unused_doc_constant_is_still_referenced(self) -> None:
         # Keeps the documentation-range constants honest: fixtures must not

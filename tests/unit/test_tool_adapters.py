@@ -85,17 +85,41 @@ class TestSimulatedAdapterCannotReachAnything:
         imported = _imports("src/acop/tools/adapters/local.py")
         assert not imported & FORBIDDEN_IMPORTS
 
-    def test_the_proxmox_adapter_reaches_nothing_yet_either(self) -> None:
-        """Checkpoint 1C registers the binding and adds no connectivity.
+    def test_only_the_proxmox_client_module_can_open_a_socket(self) -> None:
+        """The Checkpoint 1C assertion, replaced deliberately and visibly.
 
-        Read as an import check rather than a behavioural one for the same
-        reason the two above are: "it cannot reach a host" is a property of
-        what the module imports, not of what it happens to do on one input.
-        When the client lands, ``httpx`` must be removed from this assertion
-        deliberately and visibly, in the commit that earns it.
+        1C asserted that no Proxmox module imported ``httpx`` at all. That was
+        the honest statement while the adapter was inert and it would be a false
+        one now, so it is not weakened - it is made more specific. ``httpx``
+        belongs to exactly one file, and every other module in the package still
+        reaches nothing. "Which code can talk to a hypervisor" is then answered
+        by reading one file rather than by trusting a convention.
+
+        ``ssh``, ``subprocess`` and the rest stay forbidden everywhere,
+        ``client.py`` included: this checkpoint added HTTP, not execution.
         """
-        imported = _imports("src/acop/tools/adapters/proxmox.py")
-        assert not imported & FORBIDDEN_IMPORTS
+        package = Path("src/acop/tools/adapters/proxmox")
+        modules = sorted(path.name for path in package.glob("*.py"))
+        assert modules == [
+            "__init__.py",
+            "adapter.py",
+            "client.py",
+            "endpoints.py",
+            "errors.py",
+            "identity.py",
+            "projection.py",
+        ]
+        for name in modules:
+            imported = _imports(str(package / name))
+            allowed = FORBIDDEN_IMPORTS - ({"httpx"} if name == "client.py" else set())
+            assert not imported & allowed, f"{name} imports something it may not"
+        assert "httpx" in _imports(str(package / "client.py"))
+
+    def test_no_proxmox_module_shells_out(self) -> None:
+        for path in Path("src/acop/tools/adapters/proxmox").glob("*.py"):
+            calls = _attribute_calls(str(path))
+            assert "os.system" not in calls
+            assert "os.popen" not in calls
 
 
 class TestAdapterResolutionIsCodeOnly:
@@ -219,16 +243,15 @@ class TestProhibitionRegistry:
         } <= PROHIBITED_CAPABILITIES
 
 
-class TestProxmoxAdapterSkeleton:
-    """Milestone 5 Checkpoint 1C: bound, protocol-conformant, and inert.
+class TestProxmoxAdapterBinding:
+    """Milestone 5 Checkpoint 2: bound, protocol-conformant, and implemented.
 
-    The point of these is that the adapter is *inert on purpose*, not merely
-    unfinished. A skeleton that returned an empty success would be far worse
-    than one that refuses: the dispatcher would record ``SUCCEEDED`` for a read
-    that never happened.
+    The behavioural coverage lives in ``tests/unit/test_proxmox_transport.py``,
+    which runs the real client against a scripted upstream. What is left here is
+    the binding itself and the two refusals that survive the checkpoint.
     """
 
-    def _request(self, tool_name: str = "proxmox.node.list") -> AdapterRequest:
+    def _request(self, tool_name: str) -> AdapterRequest:
         return AdapterRequest(
             invocation_id=uuid.uuid4(),
             tool_name=tool_name,
@@ -244,47 +267,35 @@ class TestProxmoxAdapterSkeleton:
     def test_its_id_is_the_bare_name(self) -> None:
         assert ProxmoxAdapter.adapter_id == "proxmox"
 
-    async def test_execute_refuses_every_tool_name(self) -> None:
-        """Every tool name, because in this checkpoint every one is unimplemented."""
-        with pytest.raises(AdapterUnavailableError) as caught:
-            await PROXMOX_ADAPTER.execute(self._request())
-        assert "proxmox.node.list" in str(caught.value)
+    async def test_an_undeclared_tool_name_is_refused_loudly_and_by_name(self) -> None:
+        """Only the ten are reachable, and a wrong name says which one it was.
 
-    async def test_execute_names_the_tool_that_arrived_early(self) -> None:
-        """The only way here is a declaration naming this adapter.
-
-        If one appears before the client does, the error should say which tool
-        it was rather than fail as a generic unavailability.
+        A fall-through returning an empty success would be recorded by the
+        dispatcher as a completed read that never happened.
         """
         with pytest.raises(AdapterUnavailableError) as caught:
-            await PROXMOX_ADAPTER.execute(self._request("proxmox.vm.config"))
-        assert caught.value.context["tool_name"] == "proxmox.vm.config"
+            await PROXMOX_ADAPTER.execute(self._request("proxmox.vm.start"))
+        assert caught.value.context["tool_name"] == "proxmox.vm.start"
         assert caught.value.context["adapter_id"] == "proxmox"
 
     async def test_validate_always_refuses(self) -> None:
-        """Not a placeholder. Every Milestone 5 tool is Class 1, read-only.
+        """Still not a placeholder. Every Milestone 5 tool is Class 1.
 
         Import rule 2 only forces ``validation_required`` for Class 2 and
         Class 3, so no read-only tool sets it and the dispatcher never calls
         this. A read makes no change, so there is nothing to confirm.
         """
         with pytest.raises(AdapterUnavailableError) as caught:
-            await PROXMOX_ADAPTER.validate(self._request())
+            await PROXMOX_ADAPTER.validate(self._request("proxmox.node.list"))
         assert "read-only" in str(caught.value)
 
-    async def test_it_never_returns_a_result(self) -> None:
-        """It raises rather than returning a falsy payload, and that matters.
-
-        An ``AdapterResult`` with ``outcome=SUCCESS`` and an empty payload would
-        be recorded by the dispatcher as a completed execution. Raising is what
-        makes "not implemented" and "observed nothing" different states.
-        """
-        for method in (PROXMOX_ADAPTER.execute, PROXMOX_ADAPTER.validate):
-            with pytest.raises(AdapterUnavailableError):
-                await method(self._request())
-
-    @pytest.mark.parametrize("method_name", ["execute", "validate"])
-    async def test_the_refusal_carries_no_configuration(self, method_name: str) -> None:
+    @pytest.mark.parametrize(
+        ("method_name", "tool_name"),
+        [("execute", "proxmox.vm.start"), ("validate", "proxmox.node.list")],
+    )
+    async def test_the_refusal_carries_no_configuration(
+        self, method_name: str, tool_name: str
+    ) -> None:
         """A refusal message must not become a configuration disclosure channel.
 
         The whole rendered exception is searched - message, internal message and
@@ -293,7 +304,7 @@ class TestProxmoxAdapterSkeleton:
         """
         method = getattr(PROXMOX_ADAPTER, method_name)
         with pytest.raises(AdapterUnavailableError) as caught:
-            await method(self._request())
+            await method(self._request(tool_name))
 
         error = caught.value
         rendered = f"{error} {error.context} {error.internal_message}".lower()
@@ -301,20 +312,24 @@ class TestProxmoxAdapterSkeleton:
             assert leak not in rendered, f"{method_name} leaked {leak!r}"
 
 
-class TestNoProxmoxToolsYet:
-    """Checkpoint 1C adds a binding, not a capability."""
+class TestTheProxmoxCapabilitySurface:
+    """Checkpoint 2 adds ten capabilities, and exactly ten."""
 
-    def test_no_tool_is_declared_against_the_proxmox_adapter(self) -> None:
-        bound = [
-            definition.qualified_name
+    def test_every_proxmox_tool_binds_to_the_proxmox_adapter(self) -> None:
+        bound = sorted(
+            definition.tool_name
             for definition in CODE_REGISTRY.values()
             if definition.adapter_id == "proxmox"
-        ]
-        assert bound == []
+        )
+        assert bound == sorted(
+            name for name, _ in CODE_REGISTRY if name.startswith("proxmox.")
+        )
+        assert len(bound) == 10
 
-    def test_no_tool_name_begins_with_proxmox(self) -> None:
-        assert not [name for name, _ in CODE_REGISTRY if name.startswith("proxmox")]
+    def test_no_other_adapter_gained_a_proxmox_tool(self) -> None:
+        for name, version in CODE_REGISTRY:
+            if name.startswith("proxmox."):
+                assert CODE_REGISTRY[(name, version)].adapter_id == "proxmox"
 
-    def test_the_catalog_is_unchanged_in_size(self) -> None:
-        """Six test-and-system tools, exactly as Milestone 4 shipped."""
-        assert len(CODE_REGISTRY) == 6
+    def test_the_catalog_is_the_six_from_milestone_four_plus_ten(self) -> None:
+        assert len(CODE_REGISTRY) == 16

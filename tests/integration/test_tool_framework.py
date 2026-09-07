@@ -207,6 +207,19 @@ class TestRegistryReconciliation:
             "test.service.restart",
             "test.security.rotate_key",
             "test.prohibited.shell_exec",
+            # Milestone 5 Checkpoint 2. Ten read-only Proxmox capabilities, and
+            # exactly ten: the set is asserted rather than the count, so a tool
+            # nobody meant to ship shows up here as a name.
+            "proxmox.cluster.status",
+            "proxmox.node.list",
+            "proxmox.node.status",
+            "proxmox.node.network",
+            "proxmox.guest.list",
+            "proxmox.vm.status",
+            "proxmox.vm.config",
+            "proxmox.container.status",
+            "proxmox.container.config",
+            "proxmox.storage.list",
         }
         assert all(row.lifecycle_state == ToolLifecycle.ACTIVE.value for row in rows)
 
@@ -239,7 +252,7 @@ class TestRegistryReconciliation:
             report = await ToolRegistryReconciler(session).reconcile()
         assert not report.registered
         assert not report.retired
-        assert len(report.unchanged) == 6
+        assert len(report.unchanged) == 16
 
     async def test_a_row_with_no_code_declaration_is_retired_not_deleted(
         self, tdb: Database

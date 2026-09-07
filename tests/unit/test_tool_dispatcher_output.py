@@ -25,6 +25,7 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime
 
+import pytest
 import structlog.testing
 from pydantic import BaseModel, ConfigDict
 
@@ -39,6 +40,7 @@ from acop.models.tool_vocabulary import (
     ToolErrorCategory,
 )
 from acop.models.vocabulary import AssetType
+from acop.services.tools import dispatcher as dispatcher_module
 from acop.services.tools.dispatcher import ExecutionDispatcher
 from acop.tools.contract import ToolDefinition
 
@@ -211,39 +213,51 @@ class TestDeclaredOutput:
 class TestViolationDisclosure:
     """A violation is logged for an engineer, not for an attacker."""
 
-    def test_the_log_names_the_fields_and_never_the_values(self) -> None:
+    def test_the_log_names_the_fields_and_never_the_values(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Key names are what fixes the tool. Values are the adapter's, and unsafe.
 
-        ``structlog.testing.capture_logs`` rather than ``capsys``: the
-        dispatcher's module-level logger binds its output stream on first use,
-        which in a suite is some earlier test's captured stdout, so reading
-        stdout here is a test of import order rather than of what was logged.
-        Capturing the event dict asserts the payload itself, and lets the
-        no-leak check cover *every* key rather than the one we expected the
-        value to be in.
+        The logger is **substituted**, not reconfigured, and that is the third
+        attempt at this test rather than a stylistic preference. ``capsys``
+        failed first: the dispatcher's module logger binds its output stream on
+        first use, so in a suite the line lands in some earlier test's captured
+        stdout. ``structlog.testing.capture_logs`` failed second, and less
+        obviously - it swaps the *global* processor chain, but
+        ``configure_logging`` sets ``cache_logger_on_first_use=True``, so once
+        any earlier test in the process has made this module log, the bound
+        logger holds its own cached chain and never sees the swap. That failure
+        was invisible when this file ran alone and appeared only in a full-suite
+        run - unit and integration in one process.
+
+        A recording double removes the dependence entirely. The property under
+        test is *what this call passes to its logger*, which is a property of
+        this function - not of how structlog happens to be configured in the
+        process that happens to be running it.
         """
         definition = _definition(_RequiredOut, "test.contract.logging")
+        recorder = structlog.testing.CapturingLogger()
+        monkeypatch.setattr(dispatcher_module, "logger", recorder)
 
-        with structlog.testing.capture_logs() as entries:
-            ExecutionDispatcher._declared_output(
-                definition, {"connection_string": _LEAKY_VALUE, "status": "ok"}
-            )
+        ExecutionDispatcher._declared_output(
+            definition, {"connection_string": _LEAKY_VALUE, "status": "ok"}
+        )
 
         violations = [
-            entry
-            for entry in entries
-            if entry["event"] == "tools.output.contract_violation"
+            call
+            for call in recorder.calls
+            if call.args and call.args[0] == "tools.output.contract_violation"
         ]
         assert len(violations) == 1
         record = violations[0]
 
-        assert record["log_level"] == "error"
-        assert record["tool"] == "test.contract.logging@1.0"
+        assert record.method_name == "error"
+        assert record.kwargs["tool"] == "test.contract.logging@1.0"
         # The names, so the declaration can be fixed...
-        assert record["fields"] == ["connection_string", "status"]
-        # ...and nothing else. The whole record is serialised and searched,
+        assert record.kwargs["fields"] == ["connection_string", "status"]
+        # ...and nothing else. The whole call is serialised and searched,
         # because a leak that lands in an unexpected key is still a leak.
-        rendered = json.dumps(record, default=str)
+        rendered = json.dumps({"args": record.args, "kwargs": record.kwargs}, default=str)
         assert _LEAKY_VALUE not in rendered
         assert "hunter2" not in rendered
 
